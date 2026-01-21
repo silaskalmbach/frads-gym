@@ -4,7 +4,7 @@ import numpy as np
 import os
 import csv
 import pandas as pd
-from frads_wrapper import FradsSimulation
+from .frads_wrapper import FradsSimulation
 import sys
 import json
 
