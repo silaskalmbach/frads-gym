@@ -19,8 +19,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Import frads-gym - this registers the environment with Gymnasium
-import frads_gym
-from frads_gym.envs.frads_gym import FradsEnv
+from frads_gym import FradsEnv
 
 # Optional: For vectorized environments with stable-baselines3
 try:
