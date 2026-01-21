@@ -1,0 +1,606 @@
+{
+  "model_setup": {
+    "model_path": "RefBldgMediumOfficeNew2004_v1.4_7.2_3C_USA_CA_SAN_FRANCISCO.idf", 
+    "model_type": "medium_office",
+    "lighting_systems": [
+      {
+        "zone": "Perimeter_mid_ZN_1",
+        "level": 1200,
+        "replace": true
+      }
+    ],
+    "glazing_systems": [
+      {"file": "gs_ec01.json"},
+      {"file": "gs_ec06.json"},
+      {"file": "gs_ec18.json"},
+      {"file": "gs_ec60.json"}
+    ]
+  },
+  "facade_state_mapping": {
+    "states": [
+      {"name": "ec60", "description": "CLEAR (no tint)", "max_threshold": 0.25},
+      {"name": "ec18", "description": "LIGHT TINT", "max_threshold": 0.5},
+      {"name": "ec06", "description": "MEDIUM TINT", "max_threshold": 0.75},
+      {"name": "ec01", "description": "DARK (most tinted)", "max_threshold": 1.0}
+    ]
+  },
+  "direct_normal_irradiance": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Site Direct Solar Radiation Rate per Area",
+        "key": "Environment"
+    },
+    "observation_space": {
+        "low": 0,
+        "high": 1
+    },
+    "observation_normalize": {
+        "active": true,
+        "dynamic": true,
+        "low": 0,
+        "high": 1000,
+        "min_samples": 50,
+        "sample_length": 1000,
+        "percentile_margin": 5.0,
+        "clip": true
+    },
+    "observation_standardize": {
+        "active": false,
+        "dynamic": "dynamic",
+        "min_samples": 50,
+        "sample_length": 1000,
+        "std_threshold": 1e-4,
+        "max_deviation": 5.0,
+        "mean": 0.0,
+        "std": 1.0,
+        "low": -3,
+        "high": 3,
+        "debug": false
+    }
+  },
+  "diffuse_horizontal_irradiance": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Site Diffuse Solar Radiation Rate per Area",
+        "key": "Environment"
+    },
+    "observation_space": {
+        "low": 0,
+        "high": 1
+    },
+    "observation_normalize": {
+        "active": true,
+        "dynamic": true,
+        "low": 0,
+        "high": 500,
+        "min_samples": 50,
+        "sample_length": 1000,
+        "percentile_margin": 5.0,
+        "clip": true
+    },
+    "observation_standardize": {
+        "active": false,
+        "dynamic": "dynamic",
+        "min_samples": 10,
+        "sample_length": 1000,
+        "std_threshold": 1e-4,
+        "max_deviation": 5.0,
+        "mean": 0.0,
+        "std": 1.0,
+        "low": -3,
+        "high": 3,
+        "debug": false
+    }
+  },
+  "indoor_temp_1": {
+    "active": true,
+    "get_variable_value": {
+      "name": "Zone Mean Air Temperature",
+      "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": false,
+      "low": 10,
+      "high": 40,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "cfs_state_1": {
+    "active": true,
+    "get_cfs_state": {
+        "key": "Perimeter_mid_ZN_1_Wall_South_Window"
+    },
+    "actuate_cfs_state": {
+        "key": "Perimeter_mid_ZN_1_Wall_South_Window"
+    },
+    "observation_space": {
+        "low": 0,
+        "high": 1
+    },
+    "action_space": {
+        "low": 0,
+        "high": 1
+    }
+  },
+  "avg_wpi_1": {
+    "active": true,
+    "calculate_wpi": {
+        "zone": "Perimeter_mid_ZN_1",
+        "cfs_name": ["Perimeter_mid_ZN_1_Wall_South_Window"]
+    },
+    "post_processing": "mean",
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 1500,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "lighting_energy_1": {
+    "active": true,
+    "depends_on": "avg_wpi_1",
+    "lighting_power_calculation": {
+        "power_density_m2": 10.76,
+        "area_m2": 207.34,
+        "lux_threshold": 500
+    },
+    "divider": 1,
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 4320000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "ext_irradiance_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Surface Outside Face Incident Solar Radiation Rate per Area",
+        "key": "Perimeter_mid_ZN_1_Wall_South_Window"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 1500,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "pmv_1": {
+    "active": true,
+    "get_variable_value": {
+      "name": "Zone Thermal Comfort Fanger Model PMV",
+      "key": "Perimeter_mid_ZN_1 People"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": false,
+      "low": -3,
+      "high": 3,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "ppd_1": {
+    "active": true,
+    "get_variable_value": {
+      "name": "Zone Thermal Comfort Fanger Model PPD",
+      "key": "Perimeter_mid_ZN_1 People"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": false,
+      "dynamic": false,
+      "low": 0,
+      "high": 100,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "edgps_1": {
+    "active": false,
+    "calculate_edgps": {
+      "zone": "Perimeter_mid_ZN_1",
+      "cfs_name": ["Perimeter_mid_ZN_1_Wall_South_Window"]
+    },
+    "observation_space": {
+      "low": [0,0],
+      "high": [1,1]
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": false,
+      "low": [0,0],
+      "high": [1,1000],
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "occupant_count_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone People Occupant Count",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": false,
+      "low": 0,
+      "high": 20,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "cooling_setpoint_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone Thermostat Cooling Setpoint Temperature",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": false,
+      "low": 20,
+      "high": 30,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "heating_setpoint_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone Thermostat Heating Setpoint Temperature",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": false,
+      "low": 15,
+      "high": 25,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "cooling_energy_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone Air System Sensible Cooling Energy",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "divider": 3.5,
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 20000000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "heating_energy_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone Air System Sensible Heating Energy",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "divider": 3.5,
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 1000000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  },
+  "people_heat_gain_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone People Total Heating Energy",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 500000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "electric_equipment_energy_1": {
+    "active": true,
+    "get_variable_value": {
+        "name": "Zone Electric Equipment Total Heating Energy",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 2000000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "gas_equipment_energy_1": {
+    "active": false,
+    "get_variable_value": {
+        "name": "Zone Gas Equipment Total Heating Energy",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 500000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "other_equipment_energy_1": {
+    "active": false,
+    "get_variable_value": {
+        "name": "Zone Other Equipment Total Heating Energy",
+        "key": "Perimeter_mid_ZN_1"
+    },
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 500000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "total_energy_demand_1": {
+    "active": true,
+    "calculate_energy_sum": {
+      "keys_to_sum": [
+        "cooling_energy_1", 
+        "heating_energy_1",
+        "lighting_energy_1",
+        "people_heat_gain_1",
+        "electric_equipment_energy_1"
+      ]
+    },
+    "observation_space": { 
+      "low": 0, 
+      "high": 1 
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 40000000,
+      "min_samples": 50,
+      "sample_length": 1000,
+      "percentile_margin": 5.0,
+      "clip": true
+    },
+    "observation_standardize": {
+      "active": false,
+      "dynamic": "dynamic",
+      "min_samples": 50,
+      "sample_length": 1000,
+      "std_threshold": 1e-4,
+      "max_deviation": 5.0,
+      "mean": 0.0,
+      "std": 1.0,
+      "low": -3,
+      "high": 3,
+      "normalize_to_obs_space": true,
+      "debug": false
+    }
+  }
+}
