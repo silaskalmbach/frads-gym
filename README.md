@@ -93,8 +93,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Silas Kalmbach (silas.kalmbach@gmail.com) 
-Christoph Gehbauer
+Silas Kalmbach (silas.kalmbach@gmail.com), Christoph Gehbauer
 
 ## Acknowledgments
 
