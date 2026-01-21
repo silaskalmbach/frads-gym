@@ -1,0 +1,1 @@
+from frads_gym.envs.frads_gym import FradsEnv
