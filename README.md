@@ -2,8 +2,6 @@
 A Gymnasium environment for building facade control with [frads](https://github.com/LBNL-ETA/frads) (framework for radiance simulation).
 It combines **EnergyPlus** (thermal simulation) and **Radiance** (lighting simulation) for building facade control with reinforcement learning.
 
-Developed at [Lawrence Berkeley National Laboratory (LBNL)](https://www.lbl.gov/) in collaboration with the [IntCDC](https://www.intcdc.uni-stuttgart.de/) at University of Stuttgart.
-
 ## Features
 
 - **Coupled Simulation**: Combines EnergyPlus thermal simulation with Radiance lighting simulation
@@ -97,4 +95,4 @@ Silas Kalmbach (silas.kalmbach@gmail.com), Christoph Gehbauer
 
 ## Acknowledgments
 
-This project was developed at Lawrence Berkeley National Laboratory (LBNL) in collaboration with the Cluster of Excellence IntCDC at the University of Stuttgart.
+This project was Developed at [Lawrence Berkeley National Laboratory (LBNL)](https://www.lbl.gov/) in collaboration with the [IntCDC](https://www.intcdc.uni-stuttgart.de/) and [ILEK](https://www.ilek.uni-stuttgart.de/) at University of Stuttgart.
