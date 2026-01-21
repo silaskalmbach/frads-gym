@@ -38,7 +38,7 @@ def simple_reward(state, action, next_state, info):
     """
     energy = info.get('raw_next_total_energy_demand_1', [0.0])[0]
     # Negative reward proportional to energy consumption
-    return -energy / 1e6  # Scale down for reasonable values
+    return -energy
 
 
 def run_basic_example():
