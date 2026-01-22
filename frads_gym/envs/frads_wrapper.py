@@ -221,8 +221,10 @@ class FradsSimulation:
                 continue
                 
             # Load and add glazing system
-            gs = fr.GlazingSystem.from_json(gs_path)
+            # gs = fr.GlazingSystem.from_json(gs_path) # frads version V1
+            gs = fr.load_glazing_system(gs_path) # frads version V2
             self.epmodel.add_glazing_system(gs)
+
             print(f"Added glazing system from {gs_path}")
 
     def _simulation_config(self):
