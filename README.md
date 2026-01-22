@@ -23,13 +23,6 @@ cd frads-gym
 pip install -e .
 ```
 
-### As Submodule in Parent Project
-
-```bash
-cd frads-gym
-pip install -e .
-```
-
 ## Usage
 
 ```python
