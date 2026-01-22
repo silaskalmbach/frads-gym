@@ -26,7 +26,7 @@ pip install -e .
 ### As Submodule in Parent Project
 
 ```bash
-cd path/to/gymnasium
+cd frads-gym
 pip install -e .
 ```
 
