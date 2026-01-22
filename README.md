@@ -26,7 +26,8 @@ pip install -e .
 ### As Submodule in Parent Project
 
 ```bash
-pip install -e ./gymnasium
+cd path/to/gymnasium
+pip install -e .
 ```
 
 ## Usage
