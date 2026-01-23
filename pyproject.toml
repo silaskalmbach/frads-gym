@@ -30,8 +30,8 @@ classifiers = [
 dependencies = [
     "gymnasium>=1.0.0",
     "pandas>=2.0.0",
+    "pyenergyplus-lbnl @ file:./wheels/pyenergyplus_lbnl-25.2.0-py3-none-any.whl",
     "frads>=2.0.0",
-    "pyenergyplus @ file:./wheels/pyenergyplus-25.2.0-py3-none-any.whl",
 ]
 
 [project.urls]
