@@ -9,7 +9,6 @@ It combines **EnergyPlus** (thermal simulation) and **Radiance** (lighting simul
 - **Lighting Metrics**: Capture lighting performance metrics including:
   - **eDGP** (Enhanced Daylight Glare Probability)
   - **WPI** (Workplane Illuminance)
-  - And other visual comfort indicators
 - **Energy Optimization**: Monitor and optimize cooling, heating, and lighting energy
 - **Gymnasium Compatible**: Full compatibility with stable-baselines3, RLlib, and other RL frameworks
 
