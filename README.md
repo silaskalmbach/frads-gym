@@ -85,8 +85,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Silas Kalmbach (silas.kalmbach@gmail.com), Christoph Gehbauer
-
-## Acknowledgments
-
-This project was Developed at [Lawrence Berkeley National Laboratory (LBNL)](https://www.lbl.gov/) in collaboration with the [IntCDC](https://www.intcdc.uni-stuttgart.de/) and [ILEK](https://www.ilek.uni-stuttgart.de/) at University of Stuttgart.
+Silas Kalmbach (silas.kalmbach@gmail.com)
