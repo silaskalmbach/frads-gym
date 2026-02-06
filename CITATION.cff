@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "Kalmbach"
+    given-names: "Silas"
+    email: "silas.kalmbach@gmail.com"
+    orcid: "https://orcid.org/0000-0001-6481-8424"
+title: "frads-gym: A Gymnasium environment for building facade control"
+version: 0.1.1
+doi: 10.5281/zenodo.18504305
+date-released: 2026-02-06
+url: "https://github.com/silaskalmbach/frads-gym"
+repository-code: "https://github.com/silaskalmbach/frads-gym"
+license: MIT
+keywords:
+  - reinforcement-learning
+  - building-simulation
+  - energyplus
+  - radiance
+  - gymnasium
+  - facade-control
+  - daylight-simulation
+abstract: "A Gymnasium environment that combines EnergyPlus (thermal simulation) and Radiance (lighting simulation) for building facade control with reinforcement learning. Enables control of electrochromic glazing states and captures lighting performance metrics including eDGP and WPI."

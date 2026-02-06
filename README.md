@@ -85,4 +85,19 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Silas Kalmbach (silas.kalmbach@gmail.com)
+
+## Citation
+
+If you use this software in your research, please cite it using the following BibTeX entry:
+
+```bibtex
+@software{frads_gym_2026,
+  author = {Kalmbach, Silas},
+  doi = {10.5281/zenodo.18504305},
+  month = {2},
+  title = {{frads-gym: A Gymnasium environment for building facade control}},
+  url = {https://github.com/silaskalmbach/frads-gym},
+  version = {0.1.1},
+  year = {2026}
+}
+```
