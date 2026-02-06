@@ -1,4 +1,5 @@
 # frads-gym
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18504305.svg)](https://doi.org/10.5281/zenodo.18504305)
 A Gymnasium environment for building facade control with [frads](https://github.com/LBNL-ETA/frads) (framework for radiance simulation).
 It combines **EnergyPlus** (thermal simulation) and **Radiance** (lighting simulation) for building facade control with reinforcement learning.
 
