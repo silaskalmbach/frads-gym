@@ -10,7 +10,7 @@ allow-direct-references = true
 
 [project]
 name = "frads-gym"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Gymnasium environment for building facade control with frads (framework for radiance simulation)"
 readme = "README.md"
 license = {file = "LICENSE"}
