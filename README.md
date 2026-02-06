@@ -1,7 +1,7 @@
 # frads-gym
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18504305.svg)](https://doi.org/10.5281/zenodo.18504305)
 
-It combines **EnergyPlus** (thermal simulation) and **Radiance** (lighting simulation) via [frads](https://github.com/LBNL-ETA/frads). This Gymnasium environment was developed for the control of switchable glazing (and HVAC) using reinforcement learning.
+`frads-gym` is a Gymnasium environment built on the co-simulation of **EnergyPlus** and **Radiance** via [frads](https://github.com/LBNL-ETA/frads). The goal was to enable the control of switchable glazing using Reinforcement Learning (RL), considering thermal and high-resolution daylight influences. Electrochromic glazing is used as an example and can be found in the `examples/` folder.
 
 ## Features
 
