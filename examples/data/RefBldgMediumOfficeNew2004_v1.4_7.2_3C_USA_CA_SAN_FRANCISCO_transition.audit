@@ -1,7 +1,0 @@
-
-Conversion 25.1 => 25.2
- Starting new Transition.audit
- Will create new full IDFs
- Will create new IDF lines with units where applicable
- Will create new IDF lines leaving blank incoming fields as blank (no default fill)
- Processing IDF -- D:\sk_data\01_Project\Dissertation\20_Simulation\01_FRADS\gymnasium\examples\data\RefBldgMediumOfficeNew2004_v1.4_7.2_3C_USA_CA_SAN_FRANCISCO.idf
