@@ -76,29 +76,31 @@ class FradsEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         """Reset the environment and return the initial observation."""
-        
+
         if self.truncated_flag:
-            # Reset the truncated flag
+            # Episode was truncated mid-simulation (e.g. day/month boundary).
+            # The EnergyPlus process is still running — just reset the flag
+            # and continue stepping without restarting the simulation.
             self.truncated_flag = False
         else:
-            # Reset the simulation
+            # Full reset: restart EnergyPlus for a new episode.
             self.simulation.reset()
-        
+
         # Reset statistics trackers for standardization
         if hasattr(self, 'stat_trackers'):
             self.stat_trackers = {}
-        
+
         # Reset dynamic normalization history
         if hasattr(self, 'observation_history_dynamic'):
             self.observation_history_dynamic = {}
-    
+
         # Get initial observation (without taking an action)
         self.raw_next_obs = self.simulation.steps()
-        
+
         # Process observation
         self.observation = self._process_observation(self.raw_next_obs)
         self.raw_observation = self.raw_next_obs
-        
+
         # Return initial observation and info
         self.info['number_of_timesteps_per_hour'] = self.simulation.number_of_timesteps_per_hour
 

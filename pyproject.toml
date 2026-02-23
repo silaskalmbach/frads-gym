@@ -30,7 +30,8 @@ classifiers = [
 dependencies = [
     "gymnasium>=1.0.0",
     "pandas>=2.0.0",
-    "pyenergyplus-lbnl @ file:./wheels/pyenergyplus_lbnl-25.2.0-py3-none-any.whl",
+    "pyenergyplus-lbnl @ file:./wheels/pyenergyplus_lbnl-25.2.0-py3-none-manylinux1_x86_64.whl ; sys_platform == 'linux'",
+    "pyenergyplus-lbnl @ file:./wheels/pyenergyplus_lbnl-25.2.0-py3-none-any.whl ; sys_platform == 'win32'",
     "frads>=2.0.0",
 ]
 

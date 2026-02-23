@@ -297,26 +297,46 @@ class FradsSimulation:
                                  ((end_date - start_date).total_seconds()/3600))
         print(f"Total number of timesteps: {self.sum_timesteps}")
 
-    def _wait_for_simulation_to_finish(self):
+    def _wait_for_simulation_to_finish(self, timeout=300):
         """
         Wait until the simulation signals completion.
-        
+
         This method blocks until the simulation thread signals that it has
         completed execution, either normally or due to an error.
+
+        Args:
+            timeout: Maximum seconds to wait before giving up.
         """
-        while self.simulation_finished == False:  # Changed from == to !=
+        start = time.time()
+        # Signal the simulation to shut down and wake the controller
+        self.shutdown_event.set()
+        self.next_step_event.set()
+
+        while not self.simulation_finished:
+            elapsed = time.time() - start
+            if elapsed > timeout:
+                print(f"Warning: Timed out waiting for simulation to finish after {timeout}s. Forcing cleanup.")
+                self.simulation_finished = True
+                break
             try:
-                # queue.get() doesn't take keyword arguments like this
-                obs_data = self.obs_data_queue.get(timeout=1.0)  # Use timeout instead
-                if obs_data.get('simulation_finished', False):
+                obs_data = self.obs_data_queue.get(timeout=1.0)
+                if isinstance(obs_data, dict) and obs_data.get('simulation_finished', False):
                     self.simulation_finished = True
             except queue.Empty:
-                pass  # Continue waiting
-            time.sleep(0.1)
-            print("Waiting for simulation to finish...")
-            self.shutdown_event.set()  # Signal shutdown
-            self.next_step_event.set() # Wake up waiting controller        
+                pass
+
+        # Drain any remaining items from queues
+        self._drain_queues()
         print("Simulation appears to be finished.")
+
+    def _drain_queues(self):
+        """Drain all pending items from communication queues."""
+        for q in (self.obs_data_queue, self.action_data_queue):
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
 
     def _register_controller(self):
         """
@@ -331,38 +351,36 @@ class FradsSimulation:
     def reset(self):
         """
         Reset and initialize the simulation.
+
+        Cleanly shuts down any running EnergyPlus process, resets all
+        synchronization primitives, and starts a fresh simulation thread.
         """
         # If a simulation is already running, shut it down
         if hasattr(self, 'epsetup'):
-            if hasattr(self, 'shutdown_event'):
-                self.shutdown_event.set()  # Signal shutdown
-                self.next_step_event.set() # Wake up waiting controller
-
             self._wait_for_simulation_to_finish()
-            self.epsetup.close()
-            # Reset the shutdown event
-            self.shutdown_event.clear()
+            try:
+                self.epsetup.close()
+            except Exception as e:
+                print(f"Warning: Error closing previous EnergyPlus session: {e}")
+
+        # Reset all synchronization primitives for the new episode
+        self.shutdown_event.clear()
+        self.next_step_event.clear()
+        self.simulation_finished = False
+        self._drain_queues()
 
         # Select the appropriate weather file
         if hasattr(self, 'weather_files_path') and self.weather_files_path and len(self.weather_files_path) > 0:
-            # Get the current weather file
             current_weather = self.weather_files_path[self.current_weather_idx]
-            # Update the index for next time, wrapping around if needed
             self.current_weather_idx = (self.current_weather_idx + 1) % len(self.weather_files_path)
             print(f"Using weather file: {current_weather} (index {self.current_weather_idx-1})")
         else:
-            # Use the default weather file if no list provided
             current_weather = weather_files["usa_ca_san_francisco"]
             print("Using default San Francisco weather file")
 
-        # self._cleanup_output(folders=["Octrees", "Temp", "Matrices"])
-
-        # make a copy of self.epmodel
-        # to avoid issues with the original model being modified during simulation
-        # tempepmodel = self.epmodel.model_copy()
         # Initialize EnergyPlus Simulation Setup with Radiance enabled
         self.epsetup = fr.EnergyPlusSetup(
-            self.epmodel, 
+            self.epmodel,
             current_weather,
             enable_radiance=self.enable_radiance
         )
@@ -374,7 +392,6 @@ class FradsSimulation:
         self._register_controller()
 
         # Start the simulation in a background thread
-        self.simulation_finished = False
         simulation_thread = threading.Thread(target=self._run_simulation, daemon=True)
         simulation_thread.start()
 
@@ -406,60 +423,52 @@ class FradsSimulation:
     def steps(self, action_data=None):
         """
         Interface for external control of the simulation.
-        
+
         This method advances the simulation by one timestep, applying
         the provided control actions and returning the new state.
-        
+
         Args:
             action_data (dict, optional): Control actions to apply to the simulation.
                                          If None, no actions are taken.
-        
+
         Returns:
             dict: Observation data from the simulation after the step.
         """
+        if self.simulation_finished:
+            return {'simulation_finished': True}
+
         try:
             # Send action data to controller
             if action_data:
                 self.action_data_queue.put(action_data)
-            
-            # Clear any old data from the queue
-            while not self.obs_data_queue.empty():
-                self.obs_data_queue.get()
-                
+
             # Signal controller to continue
             self.next_step_event.set()
-            
+
             # Wait for data from controller
-            self.obs_data = self.obs_data_queue.get(timeout=10)
-            
+            self.obs_data = self.obs_data_queue.get(timeout=120)
+
             # Check if the simulation has ended
-            if self.obs_data.get('simulation_finished', False):
+            if isinstance(self.obs_data, dict) and self.obs_data.get('simulation_finished', False):
                 self.simulation_finished = True
-                time.sleep(0.1)  # Allow time for the shutdown process to complete
-                print("Simulation has finished due to completion.")
                 return {'simulation_finished': True}
 
             return self.obs_data
         except queue.Empty:
+            print("Warning: No observation data received within timeout (120s).")
             return {'error': 'No step data available (timeout)'}
 
     def shutdown(self):
         """
         Properly terminate the simulation and release resources.
-        
+
         This method should always be called when ending the simulation
         to ensure all resources are properly released and threads are
         terminated.
         """
         print("Initiating simulation shutdown...")
-        
-        # Signal all threads to terminate
-        self.shutdown_event.set()
-        
-        # Resolve any blocking wait() operations
-        self.next_step_event.set()
-        
-        # Wait for the simulation to finish - at shutdown, this should be immediate
+
+        # Wait for the simulation to finish (signals shutdown internally)
         self._wait_for_simulation_to_finish()
 
         # Properly close EnergyPlus simulation
@@ -469,16 +478,7 @@ class FradsSimulation:
                 print("EnergyPlus resources released.")
             except Exception as e:
                 print(f"Error closing EnergyPlus: {e}")
-        
-        # Clear queues to avoid memory leaks
-        try:
-            while not self.obs_data_queue.empty():
-                self.obs_data_queue.get_nowait()
-            while not self.action_data_queue.empty():
-                self.action_data_queue.get_nowait()
-        except Exception:
-            pass
-        
+
         print("Simulation shutdown completed successfully.")
 
     def _cleanup_output(self, folders=None):
