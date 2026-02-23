@@ -1,0 +1,29 @@
+# Project-specific Nextcloud ignore file (frads-gym)
+# Applies to this directory and all subdirectories
+
+# EnergyPlus simulation outputs (regeneratable, often large)
+*.epmidf
+*.audit
+*.err
+*.eso
+*.eio
+*.rdd
+*.mdd
+*.shd
+*.mtd
+*.end
+*.sql
+*.edd
+*.dxf
+
+# Radiance outputs
+*.oct
+*.amb
+*.fmx
+
+# Optuna database WAL files (SQLite internal)
+*.db-shm
+*.db-wal
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
