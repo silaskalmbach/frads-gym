@@ -83,6 +83,12 @@ class FradsEnv(gym.Env):
             # and continue stepping without restarting the simulation.
             self.truncated_flag = False
         else:
+            # Notify reward function that a full episode has ended
+            # (skip on very first reset before any steps have been taken)
+            if hasattr(self, 'reward_function') and self.reward_function is not None:
+                if hasattr(self.reward_function, 'on_episode_end') and hasattr(self, 'raw_observation'):
+                    self.reward_function.on_episode_end()
+
             # Full reset: restart EnergyPlus for a new episode.
             self.simulation.reset()
 
