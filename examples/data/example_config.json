@@ -40,7 +40,7 @@
         "low": 0,
         "high": 1000,
         "min_samples": 50,
-        "sample_length": 1000,
+        "sample_length": 1344,
         "percentile_margin": 5.0,
         "clip": true
     },
@@ -48,7 +48,7 @@
         "active": false,
         "dynamic": "dynamic",
         "min_samples": 50,
-        "sample_length": 1000,
+        "sample_length": 1344,
         "std_threshold": 1e-4,
         "max_deviation": 5.0,
         "mean": 0.0,
@@ -74,7 +74,7 @@
         "low": 0,
         "high": 500,
         "min_samples": 50,
-        "sample_length": 1000,
+        "sample_length": 1344,
         "percentile_margin": 5.0,
         "clip": true
     },
@@ -82,7 +82,7 @@
         "active": false,
         "dynamic": "dynamic",
         "min_samples": 10,
-        "sample_length": 1000,
+        "sample_length": 1344,
         "std_threshold": 1e-4,
         "max_deviation": 5.0,
         "mean": 0.0,
@@ -108,7 +108,7 @@
       "low": 10,
       "high": 40,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -116,7 +116,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -161,7 +161,7 @@
       "low": 0,
       "high": 1500,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -169,7 +169,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -199,7 +199,7 @@
       "low": 0,
       "high": 4320000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -207,7 +207,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -234,7 +234,7 @@
       "low": 0,
       "high": 1500,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -242,7 +242,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -269,7 +269,7 @@
       "low": -3,
       "high": 3,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -277,7 +277,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -304,7 +304,7 @@
       "low": 0,
       "high": 100,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -312,7 +312,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -339,7 +339,7 @@
       "low": [0,0],
       "high": [1,1000],
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -360,7 +360,7 @@
       "low": 0,
       "high": 20,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -381,7 +381,7 @@
       "low": 20,
       "high": 30,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -402,7 +402,7 @@
       "low": 15,
       "high": 25,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -424,7 +424,7 @@
       "low": 0,
       "high": 20000000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -432,7 +432,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -460,7 +460,7 @@
       "low": 0,
       "high": 1000000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -468,7 +468,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
@@ -495,7 +495,7 @@
       "low": 0,
       "high": 500000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -516,7 +516,7 @@
       "low": 0,
       "high": 2000000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -537,7 +537,7 @@
       "low": 0,
       "high": 500000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -558,7 +558,7 @@
       "low": 0,
       "high": 500000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     }
@@ -584,7 +584,7 @@
       "low": 0,
       "high": 40000000,
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "percentile_margin": 5.0,
       "clip": true
     },
@@ -592,7 +592,7 @@
       "active": false,
       "dynamic": "dynamic",
       "min_samples": 50,
-      "sample_length": 1000,
+      "sample_length": 1344,
       "std_threshold": 1e-4,
       "max_deviation": 5.0,
       "mean": 0.0,
