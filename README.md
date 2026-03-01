@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frads_gym_logo.png" alt="frads-gym logo" width="200"/>
+</p>
+
 # frads-gym
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18504305.svg)](https://doi.org/10.5281/zenodo.18504305)
 
