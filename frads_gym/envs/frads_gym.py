@@ -20,7 +20,7 @@ class FradsEnv(gym.Env):
     """
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none"):
+    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none"):
         """
         Initialize the FRADS gymnasium environment
         
@@ -67,7 +67,7 @@ class FradsEnv(gym.Env):
             print(f"Loaded {len(loaded_config)} config entries, kept {len(self.epsetup_config)} active entries")
 
         # Initialize the EnergyPlus simulation
-        self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance)
+        self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, run_periods=run_periods, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance)
         
         self.create_spaces_from_config()
         print(f"Observation space: {self.observation_space}")
@@ -81,6 +81,7 @@ class FradsEnv(gym.Env):
             # Episode was truncated mid-simulation (e.g. day/month boundary).
             # The EnergyPlus process is still running — just reset the flag
             # and continue stepping without restarting the simulation.
+            # Normalization stats are preserved since the simulation is continuous.
             self.truncated_flag = False
         else:
             # Notify reward function that a full episode has ended
@@ -92,13 +93,14 @@ class FradsEnv(gym.Env):
             # Full reset: restart EnergyPlus for a new episode.
             self.simulation.reset()
 
-        # Reset statistics trackers for standardization
-        if hasattr(self, 'stat_trackers'):
-            self.stat_trackers = {}
+            # Reset statistics trackers for standardization
+            # (only on full reset — truncation preserves continuous normalization)
+            if hasattr(self, 'stat_trackers'):
+                self.stat_trackers = {}
 
-        # Reset dynamic normalization history
-        if hasattr(self, 'observation_history_dynamic'):
-            self.observation_history_dynamic = {}
+            # Reset dynamic normalization history
+            if hasattr(self, 'observation_history_dynamic'):
+                self.observation_history_dynamic = {}
 
         # Get initial observation (without taking an action)
         self.raw_next_obs = self.simulation.steps()

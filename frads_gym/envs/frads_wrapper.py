@@ -62,7 +62,7 @@ class FradsSimulation:
     - Communicating with external controllers
     - Managing simulation state and resources
     """
-    def __init__(self, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, number_of_timesteps_per_hour=1, enable_radiance=True):
+    def __init__(self, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, enable_radiance=True):
         """
         Initialize the EnergyPlus simulation.
         
@@ -86,6 +86,7 @@ class FradsSimulation:
         self.number_of_timesteps_per_hour=number_of_timesteps_per_hour
         self.action_values = None 
         self.weather_files_path=weather_files_path
+        self.run_periods=run_periods  # List of dicts parallel to weather_files_path
         self.current_weather_idx = 0
         self.enable_radiance = enable_radiance
         self.config_file = config_file
@@ -372,11 +373,18 @@ class FradsSimulation:
         # Select the appropriate weather file
         if hasattr(self, 'weather_files_path') and self.weather_files_path and len(self.weather_files_path) > 0:
             current_weather = self.weather_files_path[self.current_weather_idx]
+            # Rotate run_period alongside weather file if per-weather run_periods are defined
+            if self.run_periods and len(self.run_periods) > self.current_weather_idx:
+                self.run_period = self.run_periods[self.current_weather_idx]
+                print(f"Using run_period: {self.run_period}")
             self.current_weather_idx = (self.current_weather_idx + 1) % len(self.weather_files_path)
             print(f"Using weather file: {current_weather} (index {self.current_weather_idx-1})")
         else:
             current_weather = weather_files["usa_ca_san_francisco"]
             print("Using default San Francisco weather file")
+
+        # Update EnergyPlus model with current run_period before starting simulation
+        self._simulation_config()
 
         # Initialize EnergyPlus Simulation Setup with Radiance enabled
         self.epsetup = fr.EnergyPlusSetup(
