@@ -18,8 +18,11 @@ License: MIT
 
 # Import necessary libraries
 import frads as fr
+from frads.methods import SensorConfig, ViewConfig
+import pyradiance as pr
 from pyenergyplus.dataset import ref_models, weather_files
 import os
+import sys
 from epmodel import epmodel as epm
 import threading
 import queue
@@ -28,6 +31,12 @@ import datetime
 import shutil
 from pathlib import Path
 import json
+
+# Add rl/subroutines to path for shared utilities
+_subroutines_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'rl', 'subroutines'))
+if _subroutines_path not in sys.path:
+    sys.path.append(_subroutines_path)
+from radiance_utils import apply_custom_radiance_config
 
 # settings = fr.Settings()
 # settings.num_processors = 4
@@ -339,6 +348,14 @@ class FradsSimulation:
                 except queue.Empty:
                     break
 
+    def _apply_custom_radiance_config(self):
+        """Apply custom sensor/view positions from epsetup_config to Radiance rconfigs.
+
+        Delegates to the shared utility in radiance_utils.py so that
+        MatricesManager can reuse the same logic during matrix regeneration.
+        """
+        apply_custom_radiance_config(self.epsetup, self.epsetup_config)
+
     def _register_controller(self):
         """
         Register the controller with EnergyPlus without triggering AST analysis errors.
@@ -387,11 +404,18 @@ class FradsSimulation:
         self._simulation_config()
 
         # Initialize EnergyPlus Simulation Setup with Radiance enabled
+        # Use initialize_radiance=False to allow custom sensor/view placement before matrix generation
         self.epsetup = fr.EnergyPlusSetup(
             self.epmodel,
             current_weather,
-            enable_radiance=self.enable_radiance
+            enable_radiance=self.enable_radiance,
+            initialize_radiance=False
         )
+
+        # Apply custom sensor/view positions from config, then initialize Radiance
+        if self.enable_radiance:
+            self._apply_custom_radiance_config()
+            self.epsetup.initialize_radiance()
 
         # Set the simulation instance in the global context singleton
         context.simulation = self
@@ -554,18 +578,18 @@ def controller(state):
             window_key = var_info["get_cfs_state"]["key"]
             obs_data[var_id] = simulation.epsetup.get_cfs_state(window_key)
     
-    # 3. Process all calculate_wpi entries
+    # 3. Process all calculate_illuminance entries
     for var_id, var_info in simulation.epsetup_config.items():
-        if "calculate_wpi" in var_info:
-            zone = var_info["calculate_wpi"]["zone"]
-            cfs_names = var_info["calculate_wpi"]["cfs_name"]
-            
+        if "calculate_illuminance" in var_info:
+            zone = var_info["calculate_illuminance"]["zone"]
+            cfs_names = var_info["calculate_illuminance"]["cfs_name"]
+
             # Create cfs_name dictionary mapping window names to their current states
             cfs_dict = {}
             for window in cfs_names:
                 cfs_dict[window] = simulation.epsetup.get_cfs_state(window)
-            
-            # Calculate WPI
+
+            # Calculate illuminance (calls frads calculate_wpi internally)
             wpi_result = simulation.epsetup.calculate_wpi(zone=zone, cfs_name=cfs_dict)
             
             # Apply post-processing if specified
@@ -599,7 +623,7 @@ def controller(state):
             # Check if the dependency is available in obs_data
             if depends_on_key in obs_data:
                 # Get zone from the dependent key's configuration
-                zone = simulation.epsetup_config[depends_on_key]["calculate_wpi"]["zone"]
+                zone = simulation.epsetup_config[depends_on_key]["calculate_illuminance"]["zone"]
                 lux_threshold = var_info["lighting_power_calculation"]["lux_threshold"]
                 
                 # Determine power density based on configuration

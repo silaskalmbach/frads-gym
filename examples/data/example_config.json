@@ -327,7 +327,11 @@
     "active": false,
     "calculate_edgps": {
       "zone": "Perimeter_mid_ZN_1",
-      "cfs_name": ["Perimeter_mid_ZN_1_Wall_South_Window"]
+      "cfs_name": ["Perimeter_mid_ZN_1_Wall_South_Window"],
+      "view_position":  [25.0, 2.3, 5.1624],
+      "view_direction": [0.0, -1.0, 0.0],
+      "_view_position_doc": "Eye height 1.2m above floor (z=3.9624+1.2=5.1624). EN 17037 seated eye level.",
+      "_view_direction_doc": "Looking south toward facade [0,-1,0]. Worst-case glare direction."
     },
     "observation_space": {
       "low": [0,0],
@@ -338,6 +342,32 @@
       "dynamic": false,
       "low": [0,0],
       "high": [1,1000],
+      "min_samples": 50,
+      "sample_length": 1344,
+      "percentile_margin": 5.0,
+      "clip": true
+    }
+  },
+  "illum_vp_1": {
+    "active": false,
+    "calculate_illuminance": {
+      "zone": "Perimeter_mid_ZN_1",
+      "cfs_name": ["Perimeter_mid_ZN_1_Wall_South_Window"],
+      "sensor_position": [25.0, 2.3, 5.1624],
+      "sensor_direction": [0.0, -1.0, 0.0],
+      "_sensor_position_doc": "Eye height 1.2m above floor (z=3.9624+1.2=5.1624). EN 17037 seated eye level.",
+      "_sensor_direction_doc": "Vertical illuminance, sensor normal facing south [0,-1,0]. Ev for DGPs formula (Li et al. 2025)."
+    },
+    "post_processing": "mean",
+    "observation_space": {
+      "low": 0,
+      "high": 1
+    },
+    "observation_normalize": {
+      "active": true,
+      "dynamic": true,
+      "low": 0,
+      "high": 10000,
       "min_samples": 50,
       "sample_length": 1344,
       "percentile_margin": 5.0,
