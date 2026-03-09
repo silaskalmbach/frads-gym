@@ -71,7 +71,7 @@ class FradsSimulation:
     - Communicating with external controllers
     - Managing simulation state and resources
     """
-    def __init__(self, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, enable_radiance=True):
+    def __init__(self, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, enable_radiance=True, staggered_start: bool = False, env_id: int = 0, n_envs: int = 1):
         """
         Initialize the EnergyPlus simulation.
         
@@ -87,16 +87,25 @@ class FradsSimulation:
             treat_weather_as_actual (bool): If True, treat weather data as actual.
             weather_files_path (str, optional): Path to the weather files directory. ["weather_file1.epw", "weather_file2.epw"]
             number_of_timesteps_per_hour (int): Number of timesteps per hour for the simulation.
+            staggered_start (bool): If True, stagger the start month deterministically based on env_id and reset count.
+            env_id (int): The ID of the environment, used for staggering start months to decorrelate training data.
+            n_envs (int): Total number of parallel environments. Used together with env_id to spread start months
+                          evenly across the year. Defaults to 1 (no spreading).
         """
         # simulation settings
         self.run_annual = run_annual
-        self.run_period=run_period
+        self.run_period = run_period
         self.treat_weather_as_actual=treat_weather_as_actual
         self.number_of_timesteps_per_hour=number_of_timesteps_per_hour
         self.action_values = None 
         self.weather_files_path=weather_files_path
         self.run_periods=run_periods  # List of dicts parallel to weather_files_path
         self.current_weather_idx = 0
+        self.staggered_start = staggered_start
+        self.env_id = env_id
+        self.n_envs = n_envs
+        self.reset_count = 0
+
         self.enable_radiance = enable_radiance
         self.config_file = config_file
         self.simulation_finished = False
@@ -392,7 +401,59 @@ class FradsSimulation:
             current_weather = self.weather_files_path[self.current_weather_idx]
             # Rotate run_period alongside weather file if per-weather run_periods are defined
             if self.run_periods and len(self.run_periods) > self.current_weather_idx:
-                self.run_period = self.run_periods[self.current_weather_idx]
+                base_run_period = self.run_periods[self.current_weather_idx].copy()
+                
+                if self.staggered_start:
+                    # Proportional staggering:
+                    # Spread start months evenly across all parallel environments by scaling env_id
+                    # proportionally to the total number of environments. This ensures that even with
+                    # only 3 envs, their start months are spread across Winter, Summer, and Autumn
+                    # rather than starting in Jan, Feb and Mar (N_envs consecutive winter months).
+                    # reset_count adds a +1 month shift per episode to ensure temporal diversity.
+                    import math
+                    base_offset = math.floor(self.env_id * 12 / self.n_envs)
+                    offset_months = (base_offset + self.reset_count) % 12
+                    
+                    # Original begin month
+                    orig_begin_month = int(base_run_period.get("begin_month", 1))
+                    
+                    # Compute new begin month (1-indexed)
+                    new_begin_month = ((orig_begin_month - 1 + offset_months) % 12) + 1
+                    
+                    # Since we are assuming _2year EPW files for staggered training, 
+                    # we always run for exactly 12 months.
+                    new_end_month = ((new_begin_month - 2) % 12) + 1  # end month is month before begin month
+                    
+                    # Calculate year boundaries
+                    orig_begin_year = int(base_run_period.get("begin_year", 2000))
+                    
+                    # Start year is the base year
+                    new_begin_year = orig_begin_year
+                    # End year depends on whether we crossed the year boundary 
+                    # (if new_end_month < new_begin_month, we crossed into the next year)
+                    if new_end_month < new_begin_month:
+                        new_end_year = new_begin_year + 1
+                    else:
+                        new_end_year = new_begin_year
+                    
+                    # Update periods
+                    base_run_period["begin_month"] = new_begin_month
+                    base_run_period["end_month"] = new_end_month
+                    base_run_period["begin_year"] = new_begin_year
+                    base_run_period["end_year"] = new_end_year
+                    # To keep it simple, we start on day 1 and end on the common last day of the month by defaulting to 28 for testing
+                    # EnergyPlus handles end_day nicely, but we use typical month boundaries
+                    base_run_period["begin_day"] = 1
+                    
+                    import calendar
+                    # Find out the last day of the new_end_month
+                    last_day_end_month = calendar.monthrange(new_end_year, new_end_month)[1]
+                    base_run_period["end_day"] = last_day_end_month
+                    
+                    self.reset_count += 1
+                    print(f"Staggered start enabled (env_id={self.env_id}, reset={self.reset_count-1}): Offset {offset_months} months -> starting {new_begin_month}/{new_begin_year} to {new_end_month}/{new_end_year}")
+
+                self.run_period = base_run_period
                 print(f"Using run_period: {self.run_period}")
             self.current_weather_idx = (self.current_weather_idx + 1) % len(self.weather_files_path)
             print(f"Using weather file: {current_weather} (index {self.current_weather_idx-1})")

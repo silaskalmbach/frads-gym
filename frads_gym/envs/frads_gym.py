@@ -20,9 +20,10 @@ class FradsEnv(gym.Env):
     """
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none"):
+    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1):
         """
         Initialize the FRADS gymnasium environment
+
         
         Args:
             render_mode: Rendering mode (not fully implemented)
@@ -67,7 +68,7 @@ class FradsEnv(gym.Env):
             print(f"Loaded {len(loaded_config)} config entries, kept {len(self.epsetup_config)} active entries")
 
         # Initialize the EnergyPlus simulation
-        self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, run_periods=run_periods, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance)
+        self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, run_periods=run_periods, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance, staggered_start=staggered_start, env_id=env_id, n_envs=n_envs)
         
         self.create_spaces_from_config()
         print(f"Observation space: {self.observation_space}")
@@ -644,8 +645,8 @@ class FradsEnv(gym.Env):
         config, path = self._find_key_in_config(key)
         
         if config is not None:
-            # If we found a config entry with 'observation_space', use it
-            if "observation_space" in config:
+            # If we found a config entry with 'observation_space' that is active, use it
+            if "observation_space" in config and config["observation_space"].get("active", True):
                 obs_low = config["observation_space"]["low"]
                 obs_high = config["observation_space"]["high"]
                 
@@ -846,8 +847,8 @@ class FradsEnv(gym.Env):
         
         # Process each entry in the config
         for var_id, var_info in config.items():
-            # Add to observation space if it has observation_space defined
-            if "observation_space" in var_info:
+            # Add to observation space if it has observation_space defined and is active
+            if "observation_space" in var_info and var_info["observation_space"].get("active", True):
                 low = var_info["observation_space"]["low"]
                 high = var_info["observation_space"]["high"]
                 
