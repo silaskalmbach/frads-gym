@@ -278,7 +278,13 @@ class FradsEnv(gym.Env):
             elif "cfs_state" in key and key in raw_obs:
                 # Map CFS state string to numeric value using facade_state_mapping
                 cfs_value = self._map_facade_state_to_value(raw_obs[key])
-                # Store as a single-element array
+                # Remap [0, 1] midpoints to the configured observation space bounds
+                # (facade_state_mapping thresholds are left unchanged as they also drive action mapping)
+                if hasattr(self, 'epsetup_config') and key in self.epsetup_config:
+                    obs_cfg = self.epsetup_config[key].get("observation_space", {})
+                    obs_low = obs_cfg.get("low", 0)
+                    obs_high = obs_cfg.get("high", 1)
+                    cfs_value = obs_low + cfs_value * (obs_high - obs_low)
                 processed_obs[key] = np.array([cfs_value], dtype=np.float32)
 
             elif key in raw_obs:
@@ -540,6 +546,37 @@ class FradsEnv(gym.Env):
         return self._apply_standardization_bounds(z_score, standardize_config, obs_low, obs_high)
 
 
+    def _apply_clip(self, value, obs_low, obs_high, mode):
+        """
+        Apply clipping to a normalized value.
+
+        Two modes are supported:
+        - ``"hard"`` (default): hard clipping via ``np.clip``.
+        - ``"soft"``           : tanh-based soft clipping that compresses
+          values asymptotically toward the observation-space bounds without
+          discarding the ordering of extreme events.  The value is first
+          shifted so that [obs_low, obs_high] maps to [-1, 1], tanh is
+          applied, then the result is shifted back.
+
+        Args:
+            value   : Normalized (but potentially out-of-range) scalar.
+            obs_low : Lower bound of the target observation space.
+            obs_high: Upper bound of the target observation space.
+            mode    : ``"hard"`` | ``"soft"``.
+
+        Returns:
+            Clipped/compressed scalar value.
+        """
+        if mode == "soft":
+            centre = (obs_high + obs_low) / 2.0
+            half_range = (obs_high - obs_low) / 2.0
+            if half_range == 0:
+                return centre
+            return centre + half_range * np.tanh((value - centre) / half_range)
+        else:
+            # Default: hard clipping
+            return np.clip(value, obs_low, obs_high)
+
     def _apply_standardization_bounds(self, z_score, standardize_config, obs_low=0, obs_high=1):
         """
         Apply bounds to Z-score and optionally normalize to observation space.
@@ -566,7 +603,7 @@ class FradsEnv(gym.Env):
         if max_deviation is not None:
             z_score = np.clip(z_score, -max_deviation, max_deviation)
         
-        # Clip to configured bounds
+        # Hard-clip to configured std bounds (always hard at this stage)
         clipped_z = np.clip(z_score, std_low, std_high)
         
         # Check if normalization to observation space is enabled
@@ -581,9 +618,10 @@ class FradsEnv(gym.Env):
                 return (to_min + to_max) / 2
             
             normalized = to_min + (clipped_z - from_min) * (to_max - to_min) / (from_max - from_min)
-            return max(to_min, min(to_max, normalized))
+            clip_mode = standardize_config.get('clip_mode', 'hard')
+            return self._apply_clip(normalized, to_min, to_max, clip_mode)
         else:
-            # Return raw Z-score (clipped to bounds)
+            # Return raw Z-score (clipped to std bounds)
             return clipped_z
 
     def _find_key_in_config(self, target_key, config_dict=None, path=None):
@@ -685,6 +723,12 @@ class FradsEnv(gym.Env):
         norm_low = norm_config["low"]
         norm_high = norm_config["high"]
         
+        # Determine clip mode: explicit clip_mode takes precedence; fallback to
+        # old boolean "clip" key for backwards compatibility.
+        clip_mode = norm_config.get('clip_mode', None)
+        if clip_mode is None and norm_config.get('clip', True):
+            clip_mode = 'hard'
+
         # Handle array values
         if isinstance(norm_low, list):
             value_array = np.array(value)
@@ -693,15 +737,21 @@ class FradsEnv(gym.Env):
             obs_low_array = np.array(obs_low)
             obs_high_array = np.array(obs_high)
             
-            # Apply normalization and clip to observation space
-            normalized = (value_array - norm_low_array) / (norm_high_array - norm_low_array)
-            return np.clip(normalized, obs_low_array, obs_high_array)
+            # Apply normalization element-wise
+            normalized = obs_low_array + (value_array - norm_low_array) * (obs_high_array - obs_low_array) / (norm_high_array - norm_low_array)
+            if clip_mode:
+                normalized = np.array([self._apply_clip(v, lo, hi, clip_mode)
+                                        for v, lo, hi in zip(normalized, obs_low_array, obs_high_array)],
+                                       dtype=np.float32)
+            return normalized
         else:
             # Handle scalar values
             if norm_high == norm_low:
                 return (obs_low + obs_high) / 2
-            normalized = (value - norm_low) / (norm_high - norm_low)
-            return np.clip(normalized, obs_low, obs_high)
+            normalized = obs_low + (value - norm_low) * (obs_high - obs_low) / (norm_high - norm_low)
+            if clip_mode:
+                normalized = self._apply_clip(normalized, obs_low, obs_high, clip_mode)
+            return normalized
 
     def _dynamic_normalize_observation(self, key, value, norm_config, obs_low, obs_high):
         """
@@ -772,14 +822,18 @@ class FradsEnv(gym.Env):
         else:
             normalized = obs_low + (value - from_min) * (obs_high - obs_low) / (from_max - from_min)
         
-        # Clamp to observation space (optional, controlled by config)
-        if norm_config.get('clip', True):
-            normalized = np.clip(normalized, obs_low, obs_high)
+        # Apply clipping to observation space (clip_mode overrides legacy "clip" boolean).
+        # "soft" uses tanh-based compression; "hard" uses np.clip.
+        clip_mode = norm_config.get('clip_mode', None)
+        if clip_mode is None and norm_config.get('clip', True):
+            clip_mode = 'hard'
+        if clip_mode:
+            normalized = self._apply_clip(normalized, obs_low, obs_high, clip_mode)
         
         # Debug output if requested
         if norm_config.get('debug', False):
             method = "dynamic" if len(history) >= min_samples_for_dynamic else "fallback"
-            print(f"Normalized {key} [{method}]: {normalized:.4f} "
+            print(f"Normalized {key} [{method}] [{clip_mode or 'no-clip'}]: {normalized:.4f} "
                   f"(Value: {value:.6f}, From: [{from_min:.6f}, {from_max:.6f}], "
                   f"To: [{obs_low:.6f}, {obs_high:.6f}])")
     
