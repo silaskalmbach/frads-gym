@@ -368,11 +368,15 @@ class FradsSimulation:
     def _register_controller(self):
         """
         Register the controller with EnergyPlus without triggering AST analysis errors.
+
+        Bypasses epsetup.set_callback() which uses fragile AST analysis
+        (inspect.getsource + ast.parse) that crashes when keyword arguments
+        use variables instead of string literals. Since _register_variables()
+        already handles variable registration explicitly, the AST analysis
+        is redundant and we register the callback directly via the runtime API.
         """
-        # Register the simplified wrapper instead of the complex controller
-        self.epsetup.set_callback(
-        "callback_begin_system_timestep_before_predictor",
-        simplified_controller_wrapper
+        self.epsetup.api.runtime.callback_begin_system_timestep_before_predictor(
+            self.epsetup.state, simplified_controller_wrapper
         )
 
     def reset(self):
@@ -708,7 +712,15 @@ def controller(state):
                 # Calculate lighting power based on the dependency value (WPI)
                 wpi_value = obs_data[depends_on_key]
                 lighting_power = (1 - min(wpi_value / lux_threshold, 1)) * power_density
-                
+
+                # Apply occupancy gate if specified: lights off when zone is unoccupied
+                occupancy_key = lighting_calc.get("occupancy_key")
+                if occupancy_key and occupancy_key in obs_data:
+                    raw_occ = obs_data[occupancy_key]
+                    occupant_count = float(raw_occ[0]) if hasattr(raw_occ, '__getitem__') else float(raw_occ)
+                    if occupant_count <= 0:
+                        lighting_power = 0.0
+
                 # Convert to energy (Joules)
                 lighting_energy = lighting_power * 3600 / simulation.number_of_timesteps_per_hour
                 obs_data[var_id] = lighting_energy

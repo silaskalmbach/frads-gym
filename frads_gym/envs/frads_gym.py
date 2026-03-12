@@ -7,6 +7,12 @@ import pandas as pd
 from .frads_wrapper import FradsSimulation
 import sys
 import json
+import math
+
+# Minimum observation history samples before switching to dynamic statistics.
+# Convention: 96 steps = 1 day at 15-min intervals.
+# Keep in sync with rewards.py and _reward_settings.py.
+MIN_SAMPLES_DEFAULT = 96
 
 
 class FradsEnv(gym.Env):
@@ -94,14 +100,10 @@ class FradsEnv(gym.Env):
             # Full reset: restart EnergyPlus for a new episode.
             self.simulation.reset()
 
-            # Reset statistics trackers for standardization
-            # (only on full reset — truncation preserves continuous normalization)
-            if hasattr(self, 'stat_trackers'):
-                self.stat_trackers = {}
-
-            # Reset dynamic normalization history
-            if hasattr(self, 'observation_history_dynamic'):
-                self.observation_history_dynamic = {}
+            # Observation normalization statistics persist across episode resets
+            # (analogous to reward_history in RewardProcessingMixin).
+            # This ensures stable normalization across multiple training episodes.
+            # stat_trackers (Welford) and observation_history_dynamic are NOT reset.
 
         # Get initial observation (without taking an action)
         self.raw_next_obs = self.simulation.steps()
@@ -512,23 +514,34 @@ class FradsEnv(gym.Env):
         self.observation_history[key].append(value)
     
         # Configuration parameters
-        min_samples = standardize_config.get('min_samples', 10)
-        sample_length = standardize_config.get('sample_length', 500)
+        min_samples = standardize_config.get('min_samples', MIN_SAMPLES_DEFAULT)
+        sample_length = standardize_config.get('sample_length', 1344)
         std_threshold = standardize_config.get('std_threshold', 1e-4)
-    
+
         # Maintain window size
         if len(self.observation_history[key]) > sample_length:
             self.observation_history[key] = self.observation_history[key][-sample_length:]
-    
+
+        # Update Welford tracker (always, O(1) cost)
+        welford = self._update_obs_welford(key, value)
+
         # Check if we have enough samples for dynamic statistics
         history = self.observation_history[key]
         if len(history) >= min_samples:
-            # Use dynamic statistics from history
+            # Phase 2: Full dynamic — use window statistics
             mean_val = np.mean(history)
             std_val = np.std(history) if len(history) > 1 else 1.0
             std_val = max(std_val, std_threshold)
+        elif welford['count'] >= 2:
+            # Phase 1 (warmup): Blend static config → Welford estimate
+            alpha = len(history) / min_samples
+            static_mean = standardize_config.get('mean', 0.0)
+            static_std = standardize_config.get('std', 1.0)
+            mean_val = (1 - alpha) * static_mean + alpha * welford['mean']
+            std_val = (1 - alpha) * static_std + alpha * welford['std']
+            std_val = max(std_val, std_threshold)
         else:
-            # Fall back to config defaults when insufficient samples
+            # Phase 0 (count < 2): Fall back to config defaults
             mean_val = standardize_config.get('mean', 0.0)
             std_val = standardize_config.get('std', 1.0)
     
@@ -753,6 +766,21 @@ class FradsEnv(gym.Env):
                 normalized = self._apply_clip(normalized, obs_low, obs_high, clip_mode)
             return normalized
 
+    def _update_obs_welford(self, key, value):
+        """Update Welford running statistics for observation warmup blending."""
+        if not hasattr(self, '_obs_welford_trackers'):
+            self._obs_welford_trackers = {}
+        if key not in self._obs_welford_trackers:
+            self._obs_welford_trackers[key] = {'count': 0, 'mean': 0.0, 'M2': 0.0}
+        t = self._obs_welford_trackers[key]
+        t['count'] += 1
+        delta = value - t['mean']
+        t['mean'] += delta / t['count']
+        delta2 = value - t['mean']
+        t['M2'] += delta * delta2
+        std = math.sqrt(t['M2'] / t['count']) if t['count'] > 1 else 1.0
+        return {'mean': t['mean'], 'std': max(std, 1e-6), 'count': t['count']}
+
     def _dynamic_normalize_observation(self, key, value, norm_config, obs_low, obs_high):
         """
         Dynamic normalization using recent observation history
@@ -778,38 +806,59 @@ class FradsEnv(gym.Env):
         self.observation_history_dynamic[key].append(value)
     
         # Configuration for dynamic normalization
-        min_samples_for_dynamic = norm_config.get('min_samples', 50)
-        sample_length = norm_config.get('sample_length', 500)
+        min_samples_for_dynamic = norm_config.get('min_samples', MIN_SAMPLES_DEFAULT)
+        sample_length = norm_config.get('sample_length', 1344)
         percentile_margin = norm_config.get('percentile_margin', 5.0)
-    
+
         # Maintain window size
         if len(self.observation_history_dynamic[key]) > sample_length:
             self.observation_history_dynamic[key] = self.observation_history_dynamic[key][-sample_length:]
-    
+
+        # Update Welford tracker (always, O(1) cost)
+        welford = self._update_obs_welford(key, value)
+
         # Use dynamic range if enough samples available
         history = self.observation_history_dynamic[key]
         if len(history) >= min_samples_for_dynamic:
-            # Use percentiles for robust range estimation
+            # Phase 2: Full dynamic — use percentiles for robust range estimation
             from_min = np.percentile(history, percentile_margin)
             from_max = np.percentile(history, 100 - percentile_margin)
-            
+
             # Ensure min != max to avoid division by zero
             if from_min == from_max:
                 # Add small margin around the constant value
                 margin = abs(from_min) * 0.1 if from_min != 0 else 0.1
                 from_min = from_min - margin
                 from_max = from_max + margin
-            
+
             # Debug output if requested
             if norm_config.get('debug', False):
                 print(f"Dynamic normalization for {key}: "
                       f"Range [{from_min:.4f}, {from_max:.4f}] "
                       f"(from {len(history)} samples)")
+        elif welford['count'] >= 2:
+            # Phase 1 (warmup): Blend static config range → Welford estimate
+            alpha = len(history) / min_samples_for_dynamic
+            static_low = norm_config.get('low', 0)
+            static_high = norm_config.get('high', 1)
+            if isinstance(static_low, list):
+                static_low = static_low[0] if len(static_low) > 0 else 0
+            if isinstance(static_high, list):
+                static_high = static_high[0] if len(static_high) > 0 else 1
+            welford_low = welford['mean'] - 2 * welford['std']
+            welford_high = welford['mean'] + 2 * welford['std']
+            from_min = (1 - alpha) * static_low + alpha * welford_low
+            from_max = (1 - alpha) * static_high + alpha * welford_high
+
+            if norm_config.get('debug', False):
+                print(f"Warmup normalization for {key}: "
+                      f"Range [{from_min:.4f}, {from_max:.4f}] "
+                      f"(alpha={alpha:.3f}, welford n={welford['count']})")
         else:
-            # Fall back to static range from configuration
+            # Phase 0 (count < 2): Fall back to static range from configuration
             from_min = norm_config.get('low', 0)
             from_max = norm_config.get('high', 1)
-            
+
             # Handle array values for fallback
             if isinstance(from_min, list):
                 from_min = from_min[0] if len(from_min) > 0 else 0
