@@ -646,17 +646,28 @@ def controller(state):
     # 3. Process all calculate_illuminance entries
     for var_id, var_info in simulation.epsetup_config.items():
         if "calculate_illuminance" in var_info:
-            zone = var_info["calculate_illuminance"]["zone"]
-            cfs_names = var_info["calculate_illuminance"]["cfs_name"]
+            illum_cfg = var_info["calculate_illuminance"]
+            zone = illum_cfg["zone"]
+            cfs_names = illum_cfg["cfs_name"]
 
             # Create cfs_name dictionary mapping window names to their current states
             cfs_dict = {}
             for window in cfs_names:
                 cfs_dict[window] = simulation.epsetup.get_cfs_state(window)
 
-            # Calculate illuminance (calls frads calculate_wpi internally)
-            wpi_result = simulation.epsetup.calculate_wpi(zone=zone, cfs_name=cfs_dict)
-            
+            # Use custom sensor if sensor_position/sensor_direction were configured,
+            # otherwise fall back to default WPI grid via calculate_wpi.
+            if "sensor_position" in illum_cfg and "sensor_direction" in illum_cfg:
+                # Custom sensor was registered under var_id by apply_custom_radiance_config
+                date_time = simulation.epsetup.get_datetime()
+                dni = simulation.epsetup.get_direct_normal_irradiance()
+                dhi = simulation.epsetup.get_diffuse_horizontal_irradiance()
+                wpi_result = simulation.epsetup.rworkflows[zone].calculate_sensor(
+                    var_id, cfs_dict, date_time, dni, dhi
+                )
+            else:
+                wpi_result = simulation.epsetup.calculate_wpi(zone=zone, cfs_name=cfs_dict)
+
             # Apply post-processing if specified
             if "post_processing" in var_info and var_info["post_processing"] == "mean":
                 obs_data[var_id] = wpi_result.mean()
