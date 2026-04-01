@@ -515,7 +515,7 @@ class FradsEnv(gym.Env):
     
         # Configuration parameters
         min_samples = standardize_config.get('min_samples', MIN_SAMPLES_DEFAULT)
-        sample_length = standardize_config.get('sample_length', 1344)
+        sample_length = standardize_config.get('sample_length', 8640)
         std_threshold = standardize_config.get('std_threshold', 1e-4)
 
         # Maintain window size
@@ -807,7 +807,7 @@ class FradsEnv(gym.Env):
     
         # Configuration for dynamic normalization
         min_samples_for_dynamic = norm_config.get('min_samples', MIN_SAMPLES_DEFAULT)
-        sample_length = norm_config.get('sample_length', 1344)
+        sample_length = norm_config.get('sample_length', 8640)
         percentile_margin = norm_config.get('percentile_margin', 5.0)
 
         # Maintain window size
