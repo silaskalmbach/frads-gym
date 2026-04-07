@@ -637,6 +637,22 @@ def controller(state):
                 key=var_key
             )
     
+    # 1.5 Process all calculate_allocation entries (proportional energy split)
+    for var_id, var_info in simulation.epsetup_config.items():
+        if "calculate_allocation" in var_info:
+            alloc_cfg = var_info["calculate_allocation"]
+            try:
+                source = float(obs_data.get(alloc_cfg["source_key"], 0.0))
+                numerator = float(obs_data.get(alloc_cfg["numerator_key"], 0.0))
+                denominator = float(obs_data.get(alloc_cfg["denominator_key"], 0.0))
+                if denominator > 0:
+                    obs_data[var_id] = source * (numerator / denominator)
+                else:
+                    obs_data[var_id] = 0.0
+            except (ValueError, TypeError) as e:
+                print(f"Warning: calculate_allocation failed for {var_id}: {e}")
+                obs_data[var_id] = 0.0
+
     # 2. Process all get_cfs_state entries
     for var_id, var_info in simulation.epsetup_config.items():
         if "get_cfs_state" in var_info:

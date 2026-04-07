@@ -2,4 +2,5 @@ from frads_gym.wrappers.clip_reward import ClipReward
 from frads_gym.wrappers.discrete_actions import DiscreteActions
 from frads_gym.wrappers.reacher_weighted_reward import ReacherRewardWrapper
 from frads_gym.wrappers.relative_position import RelativePosition
+from frads_gym.wrappers.solar_forecast import SolarForecastWrapper
 from frads_gym.wrappers.temporal_history import TemporalHistoryWrapper
