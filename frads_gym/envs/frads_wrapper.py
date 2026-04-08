@@ -374,8 +374,23 @@ class FradsSimulation:
         use variables instead of string literals. Since _register_variables()
         already handles variable registration explicitly, the AST analysis
         is redundant and we register the callback directly via the runtime API.
+
+        API-BIAS FIX (2026-04): We register with
+        `callback_end_system_timestep_after_hvac_reporting` instead of the
+        previous `callback_begin_system_timestep_before_predictor`. The former
+        fires AT THE END of each HVAC sub-timestep, when the system-timestep
+        integrated Energy variables (e.g. `Zone Air System Sensible
+        Heating/Cooling Energy`, `Heating Coil NaturalGas Energy`) hold the
+        finalised contribution for that sub-step.
+
+        The controller() function accumulates those sub-step contributions in
+        a per-instance HVAC accumulator and only flushes the full observation
+        (plus zone-level variables and agent step) at the end of each zone
+        timestep. This recovers 100% of the HVAC energy that the previous
+        begin-of-system callback was missing (it captured only ~20-90% depending
+        on the HVAC sub-stepping factor — see verify_api_bias_fix.py).
         """
-        self.epsetup.api.runtime.callback_begin_system_timestep_before_predictor(
+        self.epsetup.api.runtime.callback_end_system_timestep_after_hvac_reporting(
             self.epsetup.state, simplified_controller_wrapper
         )
 
@@ -604,38 +619,184 @@ class FradsSimulation:
                 print(f"Registered variable: {var_name} for {var_key}")
 
 
+# ---------------------------------------------------------------------------
+# API-BIAS FIX — HVAC accumulator state (per-simulation, module-level helpers)
+# ---------------------------------------------------------------------------
+#
+# Variables whose name matches one of these patterns are SYSTEM-timestep
+# integrated (one chunk per HVAC sub-step). They must be accumulated across
+# sub-steps inside a zone timestep and flushed at the zone-timestep boundary.
+#
+# Everything else (Zone Electric Equipment, Zone People, Zone Lights,
+# Surface Window Transmitted Solar Radiation, etc.) is ZONE-timestep
+# integrated — read it fresh once per zone timestep.
+#
+# The accumulator and sub-step timer are attached to the simulation instance
+# in controller() on first use.
+# ---------------------------------------------------------------------------
+
+_HVAC_SUBSTEP_VAR_PATTERNS = (
+    "Zone Air System Sensible Heating Energy",
+    "Zone Air System Sensible Cooling Energy",
+    "Zone Air System Latent Heating Energy",
+    "Zone Air System Latent Cooling Energy",
+    "Zone Air System Total Heating Energy",
+    "Zone Air System Total Cooling Energy",
+    "Zone Mechanical Ventilation Heating Load Increase Energy",
+    "Zone Mechanical Ventilation Cooling Load Increase Energy",
+    "Zone Mechanical Ventilation No Load Heat Addition Energy",
+    "Zone Mechanical Ventilation No Load Heat Removal Energy",
+    "Heating Coil NaturalGas Energy",
+    "Heating Coil Electricity Energy",
+    "Heating Coil Air Heating Energy",
+    "Heating Coil Total Heating Energy",
+    "Cooling Coil Electricity Energy",
+    "Cooling Coil Total Cooling Energy",
+    "Cooling Coil Sensible Cooling Energy",
+    "Cooling Coil Latent Cooling Energy",
+    "Fan Electricity Energy",
+    "Pump Electricity Energy",
+)
+
+
+def _is_hvac_substep_variable(var_name: str) -> bool:
+    """Return True if this EP variable is integrated per HVAC system sub-timestep.
+
+    Such variables must be accumulated across sub-steps inside a zone
+    timestep to recover the full zone-timestep total. Override per-variable
+    via the config field `"hvac_substep_accumulate": true/false`.
+    """
+    return any(p in var_name for p in _HVAC_SUBSTEP_VAR_PATTERNS)
+
+
 def controller(state):
     """
     Controller function called at each EnergyPlus timestep.
     Uses the epsetup_config to dynamically collect observations.
+
+    API-BIAS FIX (2026-04): registered with
+    `end_system_timestep_after_hvac_reporting`, meaning this function fires
+    ONCE per HVAC system sub-timestep. The sub-step count per zone timestep
+    can be 1 to ~10 depending on HVAC solver convergence. For HVAC-energy
+    variables we accumulate across sub-steps; for everything else we only
+    read/flush at the zone-timestep boundary.
     """
     # Do NOT CHANGE the following lines
     simulation = context.simulation
-    
+
     # API readiness checks
     if not simulation.epsetup.api.exchange.api_data_fully_ready(state):
         return
-    
+
     if simulation.epsetup.api.exchange.warmup_flag(state):
         return
-    
+
     # Check if shutdown signal has been set
     if simulation.shutdown_event.is_set():
         return
 
+    # Lazy-init HVAC accumulator state on the simulation instance
+    if not hasattr(simulation, "_hvac_accumulator"):
+        simulation._hvac_accumulator = {}
+        simulation._hvac_substep_time_accum = 0.0  # hours accumulated in current zone TS
+
+    # ------------------------------------------------------------------
+    # Phase 1: accumulate HVAC sub-step contributions (runs every sub-step)
+    # ------------------------------------------------------------------
+    exchange = simulation.epsetup.api.exchange
+    sys_ts_hours = exchange.system_time_step(state)   # fractional hour
+    zone_ts_hours = exchange.zone_time_step(state)    # fractional hour
+
+    # Track which HVAC variables have unresolvable handles so we only warn once
+    if not hasattr(simulation, "_hvac_missing_handles"):
+        simulation._hvac_missing_handles = set()
+
+    for var_id, var_info in simulation.epsetup_config.items():
+        gv = var_info.get("get_variable_value") if isinstance(var_info, dict) else None
+        if not gv:
+            continue
+        var_name = gv["name"]
+        var_key = gv["key"]
+        # Per-variable override via config (optional; defaults to name-based detection)
+        override = var_info.get("hvac_substep_accumulate")
+        is_hvac = override if isinstance(override, bool) else _is_hvac_substep_variable(var_name)
+        if is_hvac:
+            # Defense-in-depth: the EnergyPlus variable handle may be -1/None
+            # for variables that were request_variable()-ed but are not
+            # actually instantiated in this specific IDF/HVAC configuration
+            # (e.g. latent cooling energy on a system without humidity
+            # control). We skip those with a single warning instead of
+            # crashing the whole controller.
+            try:
+                val = simulation.epsetup.get_variable_value(name=var_name, key=var_key)
+            except Exception as exc:
+                marker = (var_name, var_key)
+                if marker not in simulation._hvac_missing_handles:
+                    print(
+                        f"[controller] WARNING: HVAC-accumulator skip for "
+                        f"{var_id} ({var_name!r} / {var_key!r}): {exc}. "
+                        f"Variable will remain 0.0 for the rest of the run."
+                    )
+                    simulation._hvac_missing_handles.add(marker)
+                continue
+            simulation._hvac_accumulator[var_id] = (
+                simulation._hvac_accumulator.get(var_id, 0.0) + float(val)
+            )
+
+    simulation._hvac_substep_time_accum += float(sys_ts_hours)
+
+    # ------------------------------------------------------------------
+    # Phase 2: zone-timestep-boundary check
+    # Only flush the full observation pipeline once per zone timestep
+    # ------------------------------------------------------------------
+    # Floating-point tolerance: accept if we've accumulated within 1e-6 hours
+    # (= 3.6 ms) of a full zone timestep
+    at_zone_boundary = (
+        simulation._hvac_substep_time_accum >= float(zone_ts_hours) - 1e-6
+    )
+    if not at_zone_boundary:
+        # Not yet at the zone timestep end; wait for more sub-steps
+        return
+
+    # Reset the sub-step timer for the next zone timestep
+    simulation._hvac_substep_time_accum = 0.0
+
     ###################################
     # Initialize observation data with datetime
     obs_data = {'datetime': simulation.epsetup.get_datetime()}
-    
+
     # 1. First process all get_variable_value entries
+    #    HVAC-substep variables use the accumulator (full zone-TS total);
+    #    zone-level variables are read fresh now.
     for var_id, var_info in simulation.epsetup_config.items():
         if "get_variable_value" in var_info:
             var_name = var_info["get_variable_value"]["name"]
             var_key = var_info["get_variable_value"]["key"]
-            obs_data[var_id] = simulation.epsetup.get_variable_value(
-                name=var_name,
-                key=var_key
-            )
+            override = var_info.get("hvac_substep_accumulate")
+            is_hvac = override if isinstance(override, bool) else _is_hvac_substep_variable(var_name)
+            if is_hvac:
+                obs_data[var_id] = simulation._hvac_accumulator.get(var_id, 0.0)
+            else:
+                # Defense-in-depth for zone-level variables: skip + warn once
+                # if the EP handle is unresolvable for this IDF/HVAC config.
+                try:
+                    obs_data[var_id] = simulation.epsetup.get_variable_value(
+                        name=var_name,
+                        key=var_key,
+                    )
+                except Exception as exc:
+                    marker = (var_name, var_key)
+                    if marker not in simulation._hvac_missing_handles:
+                        print(
+                            f"[controller] WARNING: zone-level read skip for "
+                            f"{var_id} ({var_name!r} / {var_key!r}): {exc}. "
+                            f"Variable will report 0.0 for the rest of the run."
+                        )
+                        simulation._hvac_missing_handles.add(marker)
+                    obs_data[var_id] = 0.0
+
+    # Reset HVAC accumulator for the next zone timestep
+    simulation._hvac_accumulator = {}
     
     # 1.5 Process all calculate_allocation entries (proportional energy split)
     for var_id, var_info in simulation.epsetup_config.items():
