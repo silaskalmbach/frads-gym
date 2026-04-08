@@ -707,6 +707,10 @@ def controller(state):
     sys_ts_hours = exchange.system_time_step(state)   # fractional hour
     zone_ts_hours = exchange.zone_time_step(state)    # fractional hour
 
+    # Track which HVAC variables have unresolvable handles so we only warn once
+    if not hasattr(simulation, "_hvac_missing_handles"):
+        simulation._hvac_missing_handles = set()
+
     for var_id, var_info in simulation.epsetup_config.items():
         gv = var_info.get("get_variable_value") if isinstance(var_info, dict) else None
         if not gv:
@@ -717,7 +721,24 @@ def controller(state):
         override = var_info.get("hvac_substep_accumulate")
         is_hvac = override if isinstance(override, bool) else _is_hvac_substep_variable(var_name)
         if is_hvac:
-            val = simulation.epsetup.get_variable_value(name=var_name, key=var_key)
+            # Defense-in-depth: the EnergyPlus variable handle may be -1/None
+            # for variables that were request_variable()-ed but are not
+            # actually instantiated in this specific IDF/HVAC configuration
+            # (e.g. latent cooling energy on a system without humidity
+            # control). We skip those with a single warning instead of
+            # crashing the whole controller.
+            try:
+                val = simulation.epsetup.get_variable_value(name=var_name, key=var_key)
+            except Exception as exc:
+                marker = (var_name, var_key)
+                if marker not in simulation._hvac_missing_handles:
+                    print(
+                        f"[controller] WARNING: HVAC-accumulator skip for "
+                        f"{var_id} ({var_name!r} / {var_key!r}): {exc}. "
+                        f"Variable will remain 0.0 for the rest of the run."
+                    )
+                    simulation._hvac_missing_handles.add(marker)
+                continue
             simulation._hvac_accumulator[var_id] = (
                 simulation._hvac_accumulator.get(var_id, 0.0) + float(val)
             )
@@ -756,10 +777,23 @@ def controller(state):
             if is_hvac:
                 obs_data[var_id] = simulation._hvac_accumulator.get(var_id, 0.0)
             else:
-                obs_data[var_id] = simulation.epsetup.get_variable_value(
-                    name=var_name,
-                    key=var_key,
-                )
+                # Defense-in-depth for zone-level variables: skip + warn once
+                # if the EP handle is unresolvable for this IDF/HVAC config.
+                try:
+                    obs_data[var_id] = simulation.epsetup.get_variable_value(
+                        name=var_name,
+                        key=var_key,
+                    )
+                except Exception as exc:
+                    marker = (var_name, var_key)
+                    if marker not in simulation._hvac_missing_handles:
+                        print(
+                            f"[controller] WARNING: zone-level read skip for "
+                            f"{var_id} ({var_name!r} / {var_key!r}): {exc}. "
+                            f"Variable will report 0.0 for the rest of the run."
+                        )
+                        simulation._hvac_missing_handles.add(marker)
+                    obs_data[var_id] = 0.0
 
     # Reset HVAC accumulator for the next zone timestep
     simulation._hvac_accumulator = {}
