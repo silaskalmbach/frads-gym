@@ -899,6 +899,9 @@ def controller(state):
                 
                 # Calculate lighting power based on the dependency value (WPI)
                 wpi_value = obs_data[depends_on_key]
+                # Radiance calculate_illuminance may return nested array [[val]]
+                if hasattr(wpi_value, '__len__'):
+                    wpi_value = float(np.array(wpi_value).flat[0])
                 lighting_power = (1 - min(wpi_value / lux_threshold, 1)) * power_density
 
                 # Apply occupancy gate if specified: lights off when zone is unoccupied
