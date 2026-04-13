@@ -274,8 +274,15 @@ class FradsEnv(gym.Env):
                 day_sin = np.sin(day_rad)
                 day_cos = np.cos(day_rad)
 
+                # Process day of week (7 days = 2π)
+                # Monday=0, Sunday=6
+                day_of_week = raw_obs['datetime'].weekday()
+                dow_rad = (day_of_week / 7.0) * 2 * np.pi
+                dow_sin = np.sin(dow_rad)
+                dow_cos = np.cos(dow_rad)
+
                 # Store processed time of day
-                processed_obs[key] = np.array([hour_sin, hour_cos, day_sin, day_cos], dtype=np.float32)
+                processed_obs[key] = np.array([hour_sin, hour_cos, day_sin, day_cos, dow_sin, dow_cos], dtype=np.float32)
 
             elif "cfs_state" in key and key in raw_obs:
                 # Map CFS state string to numeric value using facade_state_mapping
@@ -942,7 +949,7 @@ class FradsEnv(gym.Env):
         """
         observation_dict = {
             # Always include datetime in observation space
-            "datetime": spaces.Box(low=-1, high=1, shape=(4,), dtype=np.float32)
+            "datetime": spaces.Box(low=-1, high=1, shape=(6,), dtype=np.float32)
         }
         
         # Track action space entries
