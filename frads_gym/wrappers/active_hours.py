@@ -109,21 +109,23 @@ class ActiveHoursWrapper(gym.Wrapper):
 
     def _is_active(self, info: dict) -> bool:
         """Check whether the *next* timestep is active."""
-        solar_ok = True
-        occupancy_ok = True
+        conditions = []
 
         if self.check_solar:
             ghi = sum(
                 float(info.get(f"raw_next_{k}", 0))
                 for k in self.solar_keys
             )
-            solar_ok = ghi > 0
+            conditions.append(ghi > 0)
 
         if self.check_occupancy:
             occ = float(info.get(f"raw_next_{self.occupancy_key}", 0))
-            occupancy_ok = occ > 0
+            conditions.append(occ > 0)
+
+        if not conditions:
+            return True  # no checks enabled → always active
 
         if self.mode == "or":
-            return solar_ok or occupancy_ok
+            return any(conditions)
         else:  # "and"
-            return solar_ok and occupancy_ok
+            return all(conditions)
