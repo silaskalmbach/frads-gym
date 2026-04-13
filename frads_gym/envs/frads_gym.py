@@ -206,9 +206,9 @@ class FradsEnv(gym.Env):
                 'obs': self.raw_observation,
                 'action': action,
                 'next_obs': self.raw_next_obs,
-                # 'info': self.info,
                 'next_obs_norm': next_observation,
-                'reward': reward
+                'reward': reward,
+                'agent_active': self.info.get('agent_active', True),
             })
 
         # Update the current observation
@@ -274,7 +274,7 @@ class FradsEnv(gym.Env):
                 day_sin = np.sin(day_rad)
                 day_cos = np.cos(day_rad)
 
-                # Store processed time of day              
+                # Store processed time of day
                 processed_obs[key] = np.array([hour_sin, hour_cos, day_sin, day_cos], dtype=np.float32)
 
             elif "cfs_state" in key and key in raw_obs:
