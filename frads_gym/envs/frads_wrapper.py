@@ -474,8 +474,9 @@ class FradsSimulation:
 
                 self.run_period = base_run_period
                 print(f"Using run_period: {self.run_period}")
+            self._active_weather_idx = self.current_weather_idx
             self.current_weather_idx = (self.current_weather_idx + 1) % len(self.weather_files_path)
-            print(f"Using weather file: {current_weather} (index {self.current_weather_idx-1})")
+            print(f"Using weather file: {current_weather} (index {self._active_weather_idx})")
         else:
             current_weather = weather_files["usa_ca_san_francisco"]
             print("Using default San Francisco weather file")

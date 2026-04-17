@@ -114,6 +114,9 @@ class FradsEnv(gym.Env):
 
         # Return initial observation and info
         self.info['number_of_timesteps_per_hour'] = self.simulation.number_of_timesteps_per_hour
+        # Expose active weather file index for per-climate reward baselines
+        if hasattr(self.simulation, '_active_weather_idx'):
+            self.info['weather_file_idx'] = self.simulation._active_weather_idx
 
         return self.observation, self.info
     
@@ -198,7 +201,12 @@ class FradsEnv(gym.Env):
         next_observation = self._process_observation(self.raw_next_obs)
         
         # Calculate reward state, action, next_state
-        reward = self.reward_function(self.observation, action, next_observation, self.info)
+        # Skip reward computation during inactive steps (ActiveHoursWrapper fast-forward)
+        # to avoid polluting reward normalisation statistics with night/unoccupied data.
+        if self.info.get('agent_active', True):
+            reward = self.reward_function(self.observation, action, next_observation, self.info)
+        else:
+            reward = 0.0
 
         # Log data
         if self.logging:
@@ -436,9 +444,75 @@ class FradsEnv(gym.Env):
 
         if dynamic_mode == "dynamic":
             return self._dynamic_windowed_standardization(key, value, standardize_config, obs_low, obs_high)
+        elif dynamic_mode == "ema":
+            return self._ema_standardization(key, value, standardize_config, obs_low, obs_high)
         else:
             return self._welford_standardization(key, value, standardize_config, obs_low, obs_high)
 
+
+    def _ema_standardization(self, key, value, standardize_config, obs_low=0, obs_high=1):
+        """Standardize using Exponential Moving Average (EMA) for mean and variance.
+
+        Combines the O(1) efficiency of Welford with controlled forgetting:
+        old samples decay exponentially, so the statistics adapt to distributional
+        shifts (climate change, sim→hardware transfer) without saisonal window jumps.
+
+        Config keys (inside ``observation_standardize``):
+            ema_span (int): Effective window length in timesteps.  Default 35040
+                (1 year at 15-min intervals).  Converted to α = 2 / (span + 1).
+            min_samples (int): Welford warmup before switching to EMA.
+            std_threshold (float): Floor for std to avoid division by zero.
+
+        During warmup (count < min_samples) Welford statistics are used so the
+        EMA doesn't start from uninformed priors.
+        """
+        if not hasattr(self, '_ema_trackers'):
+            self._ema_trackers = {}
+
+        if key not in self._ema_trackers:
+            self._ema_trackers[key] = {
+                'count': 0,
+                'mean': 0.0,
+                'var': 0.0,
+                'std': 1.0,
+                # Welford accumulators for warmup phase
+                '_welford_mean': 0.0,
+                '_welford_m2': 0.0,
+            }
+
+        t = self._ema_trackers[key]
+        t['count'] += 1
+        min_samples = standardize_config.get('min_samples', MIN_SAMPLES_DEFAULT)
+        std_threshold = standardize_config.get('std_threshold', 1e-6)
+        span = standardize_config.get('ema_span', 35040)  # default: 1 year
+        alpha = 2.0 / (span + 1)
+
+        # Always update Welford (needed for warmup, cheap O(1))
+        delta_w = value - t['_welford_mean']
+        t['_welford_mean'] += delta_w / t['count']
+        delta_w2 = value - t['_welford_mean']
+        t['_welford_m2'] += delta_w * delta_w2
+
+        if t['count'] < min_samples:
+            # Warmup: use Welford statistics
+            if t['count'] > 1:
+                variance = t['_welford_m2'] / t['count']
+                t['std'] = max(np.sqrt(variance), std_threshold)
+            t['mean'] = t['_welford_mean']
+        elif t['count'] == min_samples:
+            # Transition: seed EMA with Welford's final estimates
+            t['mean'] = t['_welford_mean']
+            t['var'] = t['_welford_m2'] / t['count']
+            t['std'] = max(np.sqrt(t['var']), std_threshold)
+        else:
+            # EMA update
+            delta = value - t['mean']
+            t['mean'] += alpha * delta
+            t['var'] = (1 - alpha) * (t['var'] + alpha * delta * delta)
+            t['std'] = max(np.sqrt(t['var']), std_threshold)
+
+        z_score = (value - t['mean']) / t['std']
+        return self._apply_standardization_bounds(z_score, standardize_config, obs_low, obs_high)
 
     def _welford_standardization(self, key, value, standardize_config, obs_low=0, obs_high=1):
         """
@@ -717,7 +791,10 @@ class FradsEnv(gym.Env):
                     norm_config = config["observation_normalize"]
                     
                     # Check if dynamic normalization is enabled
-                    if norm_config.get('dynamic', False):
+                    dyn_mode = norm_config.get('dynamic', False)
+                    if dyn_mode == "ema":
+                        return self._ema_normalize_observation(key, value, norm_config, obs_low, obs_high)
+                    elif dyn_mode:
                         return self._dynamic_normalize_observation(key, value, norm_config, obs_low, obs_high)
                     else:
                         # Use static normalization
@@ -893,6 +970,99 @@ class FradsEnv(gym.Env):
                   f"(Value: {value:.6f}, From: [{from_min:.6f}, {from_max:.6f}], "
                   f"To: [{obs_low:.6f}, {obs_high:.6f}])")
     
+        return normalized
+
+    def _ema_normalize_observation(self, key, value, norm_config, obs_low, obs_high):
+        """Normalize using Exponential Moving Quantiles (EMQ) for P5/P95.
+
+        O(1) per step — tracks P5 and P95 with asymmetric EMA updates
+        (Frugal-2U style).  Adapts to distributional shifts without storing
+        a history array.
+
+        Config keys (inside ``observation_normalize``):
+            ema_span (int): Effective window in timesteps.  Default 35040 (1 year).
+                Converted to α = 2 / (span + 1).
+            percentile_margin (float): Target quantile percentage.  Default 5.0
+                → tracks P5 and P(100-5)=P95.
+            min_samples (int): Welford warmup before switching to EMQ.
+        """
+        if not hasattr(self, '_ema_quantile_trackers'):
+            self._ema_quantile_trackers = {}
+
+        span = norm_config.get('ema_span', 17520)
+        alpha = 2.0 / (span + 1)
+        pct = norm_config.get('percentile_margin', 5.0) / 100.0  # e.g. 0.05
+        min_samples = norm_config.get('min_samples', MIN_SAMPLES_DEFAULT)
+
+        if key not in self._ema_quantile_trackers:
+            # Seed from static config bounds
+            static_low = norm_config.get('low', 0)
+            static_high = norm_config.get('high', 1)
+            if isinstance(static_low, list):
+                static_low = static_low[0] if static_low else 0
+            if isinstance(static_high, list):
+                static_high = static_high[0] if static_high else 1
+            self._ema_quantile_trackers[key] = {
+                'p_low': float(static_low),
+                'p_high': float(static_high),
+                'count': 0,
+            }
+
+        t = self._ema_quantile_trackers[key]
+        t['count'] += 1
+
+        # Also update Welford for warmup blending
+        welford = self._update_obs_welford(key, value)
+
+        if t['count'] <= min_samples:
+            # Warmup: blend static → Welford range
+            blend = t['count'] / min_samples
+            static_low = norm_config.get('low', 0)
+            static_high = norm_config.get('high', 1)
+            if isinstance(static_low, list):
+                static_low = static_low[0] if static_low else 0
+            if isinstance(static_high, list):
+                static_high = static_high[0] if static_high else 1
+            w_low = welford['mean'] - 2 * welford['std']
+            w_high = welford['mean'] + 2 * welford['std']
+            from_min = (1 - blend) * static_low + blend * w_low
+            from_max = (1 - blend) * static_high + blend * w_high
+
+            # Seed EMQ trackers at end of warmup
+            if t['count'] == min_samples:
+                t['p_low'] = from_min
+                t['p_high'] = from_max
+        else:
+            # EMQ update — asymmetric step sizes push quantile toward target
+            # P_low tracks the pct-quantile (e.g. P5)
+            if value < t['p_low']:
+                t['p_low'] += alpha * (value - t['p_low']) / pct
+            else:
+                t['p_low'] += alpha * (value - t['p_low']) / (1 - pct)
+
+            # P_high tracks the (1-pct)-quantile (e.g. P95)
+            if value < t['p_high']:
+                t['p_high'] += alpha * (value - t['p_high']) / (1 - pct)
+            else:
+                t['p_high'] += alpha * (value - t['p_high']) / pct
+
+            from_min = t['p_low']
+            from_max = t['p_high']
+
+        # Guard against degenerate range
+        if from_max <= from_min:
+            margin = abs(from_min) * 0.1 if from_min != 0 else 0.1
+            from_max = from_min + margin
+
+        # Normalize to obs space
+        normalized = obs_low + (value - from_min) * (obs_high - obs_low) / (from_max - from_min)
+
+        clip_mode = norm_config.get('clip_mode', None)
+        if clip_mode is None and norm_config.get('clip', True):
+            clip_mode = 'hard'
+        if clip_mode:
+            normalized = self._apply_clip(normalized, obs_low, obs_high, clip_mode)
+
         return normalized
 
     def _check_time_period_change(self, truncate_on="none"):

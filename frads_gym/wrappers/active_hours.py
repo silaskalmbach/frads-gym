@@ -94,12 +94,6 @@ class ActiveHoursWrapper(gym.Wrapper):
             if terminated or truncated:
                 break
 
-        # 3. Mark first active step after a skip.
-        if skipped:
-            info["first_active_step"] = True
-        else:
-            info["first_active_step"] = False
-
         info["agent_active"] = True
         return obs, reward, terminated, truncated, info
 
@@ -107,19 +101,25 @@ class ActiveHoursWrapper(gym.Wrapper):
     # Internal
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _to_scalar(value) -> float:
+        """Convert a scalar, 0-d array, or 1-element array to float."""
+        arr = np.asarray(value)
+        return float(arr.item())
+
     def _is_active(self, info: dict) -> bool:
         """Check whether the *next* timestep is active."""
         conditions = []
 
         if self.check_solar:
             ghi = sum(
-                float(info.get(f"raw_next_{k}", 0))
+                self._to_scalar(info.get(f"raw_next_{k}", 0))
                 for k in self.solar_keys
             )
             conditions.append(ghi > 0)
 
         if self.check_occupancy:
-            occ = float(info.get(f"raw_next_{self.occupancy_key}", 0))
+            occ = self._to_scalar(info.get(f"raw_next_{self.occupancy_key}", 0))
             conditions.append(occ > 0)
 
         if not conditions:
