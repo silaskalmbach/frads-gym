@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import os
 import csv
+import pickle
 import pandas as pd
 from .frads_wrapper import FradsSimulation
 import sys
@@ -26,7 +27,7 @@ class FradsEnv(gym.Env):
     """
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1):
+    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_path=None):
         """
         Initialize the FRADS gymnasium environment
 
@@ -79,6 +80,84 @@ class FradsEnv(gym.Env):
         self.create_spaces_from_config()
         print(f"Observation space: {self.observation_space}")
         print(f"Action space: {self.action_space}")
+
+        # Load persisted observation-normalizer state (if a path was passed)
+        # so a freshly constructed eval env inherits the warmed-up statistics
+        # from the training env — avoids cold-start bias for EMA / Welford /
+        # dyn-window normalizers.
+        #
+        # IMPORTANT: if a path is passed but the file cannot be loaded, we
+        # raise rather than falling back to cold-start. Silent fallback would
+        # produce wrong eval numbers (policy trained on warmed-up stats vs.
+        # eval observing cold stats) and is strictly worse than an error.
+        if normalizer_state_path:
+            if not os.path.exists(normalizer_state_path):
+                raise FileNotFoundError(
+                    f"[FradsEnv env_id={env_id}] normalizer_state_path was "
+                    f"passed ({normalizer_state_path}) but the file does not "
+                    f"exist. Refusing to start with cold-start normalizer — "
+                    f"either provide a valid state file or disable transfer "
+                    f"via config.normalizer_transfer=False."
+                )
+            self.load_normalizer_state(normalizer_state_path)
+            print(f"[FradsEnv env_id={env_id}] loaded normalizer state "
+                  f"from {normalizer_state_path}")
+
+    # ------------------------------------------------------------------
+    # Observation-normalizer state persistence (training → eval handoff)
+    # ------------------------------------------------------------------
+
+    _NORMALIZER_STATE_VERSION = 1
+
+    def save_normalizer_state(self, path):
+        """Pickle current observation-normalizer state to ``path``.
+
+        Persists the stateful trackers that accumulate obs statistics:
+          * ``_ema_trackers``            — EMA mean/var/count (used by ema_zscore)
+          * ``stat_trackers``            — Welford for static z-score
+          * ``observation_history``      — sample list for static min-max
+          * ``observation_history_dynamic`` — sliding window for dyn-norm
+          * ``_obs_welford_trackers``    — Welford used inside dyn-normaliser
+
+        Static-config-only modes (raw, static_minmax with fixed bounds from
+        JSON) don't rely on any of these; loading into them is a no-op.
+        """
+        state = {
+            "version":       self._NORMALIZER_STATE_VERSION,
+            "ema_trackers":  getattr(self, "_ema_trackers", {}),
+            "stat_trackers": getattr(self, "stat_trackers", {}),
+            "obs_history":   getattr(self, "observation_history", {}),
+            "obs_history_dynamic":    getattr(self, "observation_history_dynamic", {}),
+            "obs_welford_trackers":   getattr(self, "_obs_welford_trackers", {}),
+        }
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    def load_normalizer_state(self, path):
+        """Load observation-normalizer state from a pickle produced by
+        :meth:`save_normalizer_state`. Overwrites any existing tracker state.
+
+        Raises:
+            FileNotFoundError: if ``path`` does not exist.
+            ValueError: if the state-file schema version is incompatible.
+            OSError / pickle.UnpicklingError: on corrupt files (propagated).
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Normalizer state file not found: {path}")
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+        version = state.get("version", 0)
+        if version != self._NORMALIZER_STATE_VERSION:
+            raise ValueError(
+                f"Incompatible normalizer-state version {version} "
+                f"(expected {self._NORMALIZER_STATE_VERSION}) in {path}"
+            )
+        self._ema_trackers              = state.get("ema_trackers", {})
+        self.stat_trackers              = state.get("stat_trackers", {})
+        self.observation_history        = state.get("obs_history", {})
+        self.observation_history_dynamic = state.get("obs_history_dynamic", {})
+        self._obs_welford_trackers      = state.get("obs_welford_trackers", {})
 
 
     def reset(self, seed=None, options=None):
