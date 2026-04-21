@@ -28,7 +28,7 @@ class FradsEnv(gym.Env):
     """
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_path=None):
+    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_dir=None):
         """
         Initialize the FRADS gymnasium environment
 
@@ -45,7 +45,8 @@ class FradsEnv(gym.Env):
         self.reward_function = reward_function
         self.truncated_flag = False
         self.truncate_on = truncate_on
-        
+        self._weather_files_path = weather_files_path
+
         # Get config file directory for resolving relative paths and load config
         loaded_config = {}
         sim_config_arg = config_file
@@ -82,27 +83,31 @@ class FradsEnv(gym.Env):
         print(f"Observation space: {self.observation_space}")
         print(f"Action space: {self.action_space}")
 
-        # Load persisted observation-normalizer state (if a path was passed)
-        # so a freshly constructed eval env inherits the warmed-up statistics
-        # from the training env — avoids cold-start bias for EMA / Welford /
-        # dyn-window normalizers.
+        # Per-city observation-normalizer transfer. If a directory is
+        # passed we look for normalizer_state_<city_id>.pkl inside it.
+        # Missing file → cold-start (expected for zero-shot test cities
+        # like Houston).
         #
-        # IMPORTANT: if a path is passed but the file cannot be loaded, we
-        # raise rather than falling back to cold-start. Silent fallback would
-        # produce wrong eval numbers (policy trained on warmed-up stats vs.
-        # eval observing cold stats) and is strictly worse than an error.
-        if normalizer_state_path:
-            if not os.path.exists(normalizer_state_path):
+        # Hard break: the legacy single-file `normalizer_state_path`
+        # parameter is no longer supported. See spec 2026-04-21.
+        if normalizer_state_dir:
+            if not os.path.isdir(normalizer_state_dir):
                 raise FileNotFoundError(
-                    f"[FradsEnv env_id={env_id}] normalizer_state_path was "
-                    f"passed ({normalizer_state_path}) but the file does not "
-                    f"exist. Refusing to start with cold-start normalizer — "
-                    f"either provide a valid state file or disable transfer "
-                    f"via config.normalizer_transfer=False."
+                    f"[FradsEnv env_id={env_id}] normalizer_state_dir was "
+                    f"passed ({normalizer_state_dir}) but the directory does "
+                    f"not exist."
                 )
-            self.load_normalizer_state(normalizer_state_path)
-            print(f"[FradsEnv env_id={env_id}] loaded normalizer state "
-                  f"from {normalizer_state_path}")
+            city_id = self.extract_city_id(
+                config_file=config_file,
+                weather_files_path=weather_files_path,
+            )
+            loaded = self._try_load_normalizer_from_dir(normalizer_state_dir, city_id)
+            if loaded:
+                print(f"[FradsEnv env_id={env_id}] loaded normalizer state "
+                      f"for city='{city_id}' from {normalizer_state_dir}")
+            else:
+                print(f"[FradsEnv env_id={env_id}] no pickle for city='{city_id}' "
+                      f"in {normalizer_state_dir} — cold-start (zero-shot)")
 
     # ------------------------------------------------------------------
     # Observation-normalizer state persistence (training → eval handoff)
@@ -228,6 +233,21 @@ class FradsEnv(gym.Env):
         self.observation_history        = state.get("obs_history", {})
         self.observation_history_dynamic = state.get("obs_history_dynamic", {})
         self._obs_welford_trackers      = state.get("obs_welford_trackers", {})
+
+    def _try_load_normalizer_from_dir(self, normalizer_state_dir: str, city_id: str) -> bool:
+        """Attempt to load a city-specific normalizer pickle from the given directory.
+
+        Returns True if a matching `normalizer_state_<city_id>.pkl` was
+        found and loaded, False if it was absent (caller should cold-start).
+        Propagates any errors from :meth:`load_normalizer_state`.
+        """
+        pickle_path = os.path.join(
+            normalizer_state_dir, f"normalizer_state_{city_id}.pkl"
+        )
+        if not os.path.exists(pickle_path):
+            return False
+        self.load_normalizer_state(pickle_path)
+        return True
 
 
     def reset(self, seed=None, options=None):
