@@ -9,6 +9,7 @@ from .frads_wrapper import FradsSimulation
 import sys
 import json
 import math
+import re
 
 # Minimum observation history samples before switching to dynamic statistics.
 # Convention: 96 steps = 1 day at 15-min intervals.
@@ -128,14 +129,21 @@ class FradsEnv(gym.Env):
         Silent defaults are avoided on purpose: a wrong match would cause
         silent pickle mis-loading in downstream eval.
         """
-        import re
+        # Parent dir names that are NOT cities — e.g., bare filenames land in
+        # the CWD whose basename could be anything, and the canonical weather
+        # dir "TMY" is a sibling of per-city subdirs.
+        _NON_CITY_PARENTS = {"tmy", "weather", ".", "..", ""}
 
         if weather_files_path:
             first = weather_files_path[0] if isinstance(weather_files_path, (list, tuple)) else weather_files_path
             if first:
                 city = os.path.basename(os.path.dirname(os.path.abspath(str(first))))
-                if city:
-                    return city.lower()
+                city_lower = city.lower()
+                # Require a plausible city-dir name: starts with a letter, only
+                # word chars afterwards, length >= 3, and not in the denylist.
+                if (city_lower not in _NON_CITY_PARENTS
+                        and re.match(r"^[a-z][a-z0-9_]{2,}$", city_lower)):
+                    return city_lower
 
         if isinstance(config_file, dict):
             model_path = config_file.get("model_setup", {}).get("model_path", "")
