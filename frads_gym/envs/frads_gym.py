@@ -219,6 +219,8 @@ class FradsEnv(gym.Env):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump(state, f)
+            f.flush()
+            os.fsync(f.fileno())
 
     def load_normalizer_state(self, path):
         """Load observation-normalizer state from a pickle produced by
