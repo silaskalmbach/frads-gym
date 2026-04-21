@@ -109,6 +109,68 @@ class FradsEnv(gym.Env):
 
     _NORMALIZER_STATE_VERSION = 1
 
+    # ------------------------------------------------------------------
+    # City-identifier extraction (used to match training trackers to
+    # eval envs for per-city normalizer transfer).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_city_id(config_file, weather_files_path):
+        """Return a canonical lowercase city identifier for this env.
+
+        Matching order:
+          1. weather_files_path[0].parent.name.lower() — the TMY directory
+             (e.g., "Chicago" → "chicago").
+          2. config_file["model_setup"]["model_path"] — regex looks for
+             "_USA_<state>_<CITY>" segment before ".idf" (strips _MOD).
+          3. ValueError if neither produces a city.
+
+        Silent defaults are avoided on purpose: a wrong match would cause
+        silent pickle mis-loading in downstream eval.
+        """
+        import re
+
+        if weather_files_path:
+            first = weather_files_path[0] if isinstance(weather_files_path, (list, tuple)) else weather_files_path
+            if first:
+                city = os.path.basename(os.path.dirname(os.path.abspath(str(first))))
+                if city:
+                    return city.lower()
+
+        if isinstance(config_file, dict):
+            model_path = config_file.get("model_setup", {}).get("model_path", "")
+        elif isinstance(config_file, str) and os.path.exists(config_file):
+            with open(config_file, "r") as f:
+                model_path = json.load(f).get("model_setup", {}).get("model_path", "")
+        else:
+            model_path = ""
+
+        if model_path:
+            # Strip extension and _MOD suffix, then take the trailing CITY token.
+            stem = os.path.basename(model_path)
+            stem = re.sub(r"\.idf$", "", stem, flags=re.IGNORECASE)
+            stem = re.sub(r"_MOD$", "", stem)
+            # Require "_USA_<2letters>_<CITY>" at the end — avoids matching
+            # arbitrary suffixes.
+            m = re.search(r"_USA_[A-Z]{2}_([A-Z][A-Z_]*)$", stem)
+            if m:
+                return m.group(1).lower()
+
+        raise ValueError(
+            f"Cannot extract city_id: weather_files_path={weather_files_path!r}, "
+            f"config_file model_path={model_path!r}. "
+            f"Expected weather path like '.../Chicago/...epw' or IDF ending "
+            f"in '_USA_XX_CITY.idf'."
+        )
+
+    def get_city_id(self) -> str:
+        """Instance wrapper for use via SubprocVecEnv.env_method('get_city_id')."""
+        return self.extract_city_id(
+            config_file=self.config_file,
+            weather_files_path=getattr(self.simulation, "weather_files_path", None)
+            or getattr(self, "_weather_files_path", None),
+        )
+
     def save_normalizer_state(self, path):
         """Pickle current observation-normalizer state to ``path``.
 
