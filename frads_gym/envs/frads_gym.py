@@ -45,6 +45,7 @@ class FradsEnv(gym.Env):
         self.reward_function = reward_function
         self.truncated_flag = False
         self.truncate_on = truncate_on
+        # Stash for get_city_id's fallback path when self.simulation.weather_files_path is unset.
         self._weather_files_path = weather_files_path
 
         # Get config file directory for resolving relative paths and load config
@@ -101,6 +102,7 @@ class FradsEnv(gym.Env):
                 config_file=config_file,
                 weather_files_path=weather_files_path,
             )
+            self._city_id = city_id
             loaded = self._try_load_normalizer_from_dir(normalizer_state_dir, city_id)
             if loaded:
                 print(f"[FradsEnv env_id={env_id}] loaded normalizer state "
@@ -177,12 +179,21 @@ class FradsEnv(gym.Env):
         )
 
     def get_city_id(self) -> str:
-        """Instance wrapper for use via SubprocVecEnv.env_method('get_city_id')."""
-        return self.extract_city_id(
+        """Instance wrapper for use via SubprocVecEnv.env_method('get_city_id').
+
+        Cached after first extraction via ``_city_id`` (set either in
+        ``__init__`` when normalizer_state_dir is passed, or lazily here).
+        """
+        cached = getattr(self, "_city_id", None)
+        if cached is not None:
+            return cached
+        city_id = self.extract_city_id(
             config_file=self.config_file,
             weather_files_path=getattr(self.simulation, "weather_files_path", None)
             or getattr(self, "_weather_files_path", None),
         )
+        self._city_id = city_id
+        return city_id
 
     def save_normalizer_state(self, path):
         """Pickle current observation-normalizer state to ``path``.
