@@ -294,11 +294,27 @@ class FradsEnv(gym.Env):
         self.observation = self._process_observation(self.raw_next_obs)
         self.raw_observation = self.raw_next_obs
 
+        # Reset per-episode step counter (raw_next_step_idx semantics: index of
+        # the latest simulation step that produced raw_next_obs, starting at 0
+        # for the initial observation returned by reset()).
+        self._step_idx = 0
+
         # Return initial observation and info
         self.info['number_of_timesteps_per_hour'] = self.simulation.number_of_timesteps_per_hour
         # Expose active weather file index for per-climate reward baselines
         if hasattr(self.simulation, '_active_weather_idx'):
             self.info['weather_file_idx'] = self.simulation._active_weather_idx
+
+        # Expose city_id + step_idx in info so reward functions (e.g. R1+ /
+        # auto_rewards.energy_auto_r1p) can look up per-step oracle values
+        # without relying on side-channels. List-wrapping matches the existing
+        # raw_next_* convention.
+        try:
+            city_id = self.get_city_id()
+        except Exception:
+            city_id = "unknown"
+        self.info['raw_next_city_id'] = [city_id]
+        self.info['raw_next_step_idx'] = np.array([self._step_idx], dtype=np.int64)
 
         return self.observation, self.info
     
@@ -334,19 +350,36 @@ class FradsEnv(gym.Env):
         if self.raw_next_obs.get('simulation_finished', False):
             truncated = True # Episode is finished
             terminated = False # Not used in this context, if a terminal state is reached
-            
+
             # Use zeros for next_observation
-            next_observation = {key: np.zeros(space.shape, dtype=space.dtype) 
+            next_observation = {key: np.zeros(space.shape, dtype=space.dtype)
                               for key, space in self.observation_space.spaces.items()}
-            
+
             # No reward at end of simulation
             reward = 0.0
-            
-            # Update info
-            info = {'simulation_finished': True}
+
+            # Advance step counter so a reward function reading info after the
+            # final step still sees a monotonically-increasing index.
+            self._step_idx = getattr(self, '_step_idx', 0) + 1
+            try:
+                city_id = self.get_city_id()
+            except Exception:
+                city_id = "unknown"
+
+            # Update info — include city/step keys so downstream consumers
+            # (R1+ / oracle replay) can still identify the final step.
+            info = {
+                'simulation_finished': True,
+                'raw_next_city_id': [city_id],
+                'raw_next_step_idx': np.array([self._step_idx], dtype=np.int64),
+            }
+            # Also mirror onto self.info so callers inspecting env.info see
+            # the same values.
+            self.info['raw_next_city_id'] = info['raw_next_city_id']
+            self.info['raw_next_step_idx'] = info['raw_next_step_idx']
 
             # print("Simulation finished, no further steps possible.")
-            
+
             return next_observation, reward, terminated, truncated, info
         
         # Check for time period change
@@ -355,13 +388,24 @@ class FradsEnv(gym.Env):
             terminated = False
 
             self.truncated_flag = True
-            
+
             # Use current observation as the final observation
             next_observation = self._process_observation(self.raw_next_obs)
-            
+
+            # Advance step counter and expose city_id + step_idx so that the
+            # final-step reward call below sees the same R1+ context as
+            # regular steps.
+            self._step_idx = getattr(self, '_step_idx', 0) + 1
+            try:
+                city_id = self.get_city_id()
+            except Exception:
+                city_id = "unknown"
+            self.info['raw_next_city_id'] = [city_id]
+            self.info['raw_next_step_idx'] = np.array([self._step_idx], dtype=np.int64)
+
             # Calculate reward for this last step
             reward = self.reward_function(self.observation, action, next_observation, self.info)
-            
+
             # Update info
             self.info['time_period_change'] = True
 
@@ -378,6 +422,18 @@ class FradsEnv(gym.Env):
                 self.info[f'raw_next_{key}'] = value
             else:
                 self.info[f'raw_next_{key}'] = np.array([value], dtype=np.float32)
+
+        # Advance per-episode step counter and expose city_id + step_idx for
+        # reward functions that need to look up per-step oracle values (e.g.
+        # auto_rewards.energy_auto_r1p / R1+). City id is cached after the
+        # first call, so this is cheap.
+        self._step_idx = getattr(self, '_step_idx', 0) + 1
+        try:
+            city_id = self.get_city_id()
+        except Exception:
+            city_id = "unknown"
+        self.info['raw_next_city_id'] = [city_id]
+        self.info['raw_next_step_idx'] = np.array([self._step_idx], dtype=np.int64)
         
         # Process observation from simulation
         next_observation = self._process_observation(self.raw_next_obs)
