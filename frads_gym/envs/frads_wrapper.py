@@ -840,7 +840,9 @@ def controller(state):
                 date_time = simulation.epsetup.get_datetime()
                 dni = simulation.epsetup.get_direct_normal_irradiance()
                 dhi = simulation.epsetup.get_diffuse_horizontal_irradiance()
-                wpi_result = simulation.epsetup.rworkflows[zone].calculate_sensor(
+                wf = simulation.epsetup.rworkflows[zone]
+                print(f"[CALLER_CALC_SENSOR] var_id={var_id} workflow_type={type(wf).__name__} method_qualname={wf.calculate_sensor.__qualname__}", flush=True)
+                wpi_result = wf.calculate_sensor(
                     var_id, cfs_dict, date_time, dni, dhi
                 )
             else:
