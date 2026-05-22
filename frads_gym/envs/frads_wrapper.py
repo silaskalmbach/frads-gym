@@ -496,7 +496,16 @@ class FradsSimulation:
         # Apply custom sensor/view positions from config, then initialize Radiance
         if self.enable_radiance:
             self._apply_custom_radiance_config()
-            self.epsetup.initialize_radiance()
+            # The 5PM-image glare path (FivePhaseMethod.calculate_dgp)
+            # requires the view matrices (V, Vd, Cds, Cdf) which
+            # initialize_radiance skips by default. Promote when any
+            # config entry routes to calculate_dgp -- otherwise we'd
+            # bury the user in NoneType subscript errors at runtime.
+            needs_view_matrices = any(
+                isinstance(v, dict) and "calculate_dgp" in v
+                for v in self.epsetup_config.values()
+            )
+            self.epsetup.initialize_radiance(view_matrices=needs_view_matrices)
 
         # Set the simulation instance in the global context singleton
         context.simulation = self
@@ -854,41 +863,66 @@ def controller(state):
             else:
                 obs_data[var_id] = wpi_result
     
-    # 4. Process all calculate_edgps entries
+    # 4. Process all calculate_edgps / calculate_dgp entries
+    #
+    # Two glare metrics are supported:
+    #   - calculate_dgp:  5PM matrix image + evalglare (McNeil 2013).
+    #                     Scientifically rigorous for BSDF facades --
+    #                     matches the workflow's calculate_sensor (WPI/Ev)
+    #                     numerical model.
+    #   - calculate_edgps: rpict fisheye + evalglare (Wienold 2009 eDGPs).
+    #                      Older simplified path; rpict cannot resolve
+    #                      Klems-BSDF transmission, so DGP saturates for
+    #                      BSDF facades. Kept for backward compatibility.
+    #
+    # If a var_info dict has BOTH keys (config in transition) the 5PM
+    # path wins -- there's no scenario where running both makes sense
+    # for the same observation slot.
     #
     # Defense-in-Depth: pyenergyplus invokes this callback via a ctypes
     # bridge that SILENTLY swallows Python exceptions ("Exception ignored
-    # on calling ctypes callback function: ..."). If calculate_edgps
-    # raises -- e.g. AttributeError on a workflow class that lacks the
-    # method, missing matrices, evalglare crash -- the controller exits
-    # before reaching `obs_data_queue.put` below, the main thread blocks
-    # forever on `obs_data_queue.get(timeout=120)`, and the simulation
-    # appears to hang. Wrap each per-var call, log the traceback so we can
-    # diagnose, and fall back to a sentinel observation so the callback
-    # still completes and pushes obs_data to the queue.
+    # on calling ctypes callback function: ..."). If the call raises --
+    # e.g. AttributeError on a workflow class that lacks the method,
+    # missing matrices, evalglare crash -- the controller exits before
+    # reaching `obs_data_queue.put` below, the main thread blocks forever
+    # on `obs_data_queue.get(timeout=120)`, and the simulation appears to
+    # hang. Wrap each call, log the traceback so the silent swallow is no
+    # longer silent, and fall back to a sentinel observation so the
+    # callback still completes its put on the queue.
     for var_id, var_info in simulation.epsetup_config.items():
-        if "calculate_edgps" in var_info:
-            zone = var_info["calculate_edgps"]["zone"]
-            cfs_names = var_info["calculate_edgps"]["cfs_name"]
+        cfg = var_info.get("calculate_dgp") or var_info.get("calculate_edgps")
+        if cfg is None:
+            continue
+        zone = cfg["zone"]
+        cfs_names = cfg["cfs_name"]
 
-            # Create cfs_name dictionary mapping window names to their current states
-            cfs_dict = {}
-            for window in cfs_names:
-                cfs_dict[window] = simulation.epsetup.get_cfs_state(window)
+        # Create cfs_name dictionary mapping window names to their current states
+        cfs_dict = {}
+        for window in cfs_names:
+            cfs_dict[window] = simulation.epsetup.get_cfs_state(window)
 
-            try:
+        try:
+            if "calculate_dgp" in var_info:
+                obs_data[var_id] = simulation.epsetup.calculate_dgp(
+                    zone=zone,
+                    cfs_name=cfs_dict,
+                    ev_sensor=cfg.get("ev_sensor"),
+                    save_hdr=cfg.get("save_hdr"),
+                )
+            else:
                 obs_data[var_id] = simulation.epsetup.calculate_edgps(
                     zone=zone,
                     cfs_name=cfs_dict,
                 )
-            except Exception as exc:
-                import traceback
-                print(
-                    f"[EDGP_ERROR] var_id={var_id} zone={zone} exc={exc!r}",
-                    flush=True,
-                )
-                traceback.print_exc()
-                obs_data[var_id] = (-1.0, -1.0)
+        except Exception as exc:
+            import traceback
+            label = "DGP" if "calculate_dgp" in var_info else "EDGP"
+            print(
+                f"[{label}_ERROR] var_id={var_id} zone={zone} exc={exc!r}",
+                flush=True,
+            )
+            traceback.print_exc()
+            obs_data[var_id] = (-1.0, -1.0)
     
     # 5. Process lighting power calculations for entries that depend on other values
     for var_id, var_info in simulation.epsetup_config.items():
