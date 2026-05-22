@@ -234,11 +234,11 @@ class FradsSimulation:
                 gs_path = glazing["file"]
             else:
                 gs_path = os.path.join(self.input_dir, glazing["file"])
-                
+
             if not os.path.exists(gs_path):
                 print(f"Warning: Glazing system file not found: {gs_path}")
                 continue
-                
+
             # Load and add glazing system
             # gs = fr.GlazingSystem.from_json(gs_path) # frads version V1
             gs = fr.load_glazing_system(gs_path) # frads version V2
@@ -855,21 +855,40 @@ def controller(state):
                 obs_data[var_id] = wpi_result
     
     # 4. Process all calculate_edgps entries
+    #
+    # Defense-in-Depth: pyenergyplus invokes this callback via a ctypes
+    # bridge that SILENTLY swallows Python exceptions ("Exception ignored
+    # on calling ctypes callback function: ..."). If calculate_edgps
+    # raises -- e.g. AttributeError on a workflow class that lacks the
+    # method, missing matrices, evalglare crash -- the controller exits
+    # before reaching `obs_data_queue.put` below, the main thread blocks
+    # forever on `obs_data_queue.get(timeout=120)`, and the simulation
+    # appears to hang. Wrap each per-var call, log the traceback so we can
+    # diagnose, and fall back to a sentinel observation so the callback
+    # still completes and pushes obs_data to the queue.
     for var_id, var_info in simulation.epsetup_config.items():
         if "calculate_edgps" in var_info:
             zone = var_info["calculate_edgps"]["zone"]
             cfs_names = var_info["calculate_edgps"]["cfs_name"]
-            
+
             # Create cfs_name dictionary mapping window names to their current states
             cfs_dict = {}
             for window in cfs_names:
                 cfs_dict[window] = simulation.epsetup.get_cfs_state(window)
-            
-            # Calculate eDGPS
-            obs_data[var_id] = simulation.epsetup.calculate_edgps(
-                zone=zone, 
-                cfs_name=cfs_dict
-            )
+
+            try:
+                obs_data[var_id] = simulation.epsetup.calculate_edgps(
+                    zone=zone,
+                    cfs_name=cfs_dict,
+                )
+            except Exception as exc:
+                import traceback
+                print(
+                    f"[EDGP_ERROR] var_id={var_id} zone={zone} exc={exc!r}",
+                    flush=True,
+                )
+                traceback.print_exc()
+                obs_data[var_id] = (-1.0, -1.0)
     
     # 5. Process lighting power calculations for entries that depend on other values
     for var_id, var_info in simulation.epsetup_config.items():
