@@ -862,7 +862,49 @@ def controller(state):
                 obs_data[var_id] = wpi_result.mean()
             else:
                 obs_data[var_id] = wpi_result
-    
+
+    # 3.5. Apply per-sensor origin-constrained calibration to illuminance.
+    # real_estimate = k * sim_raw  (intercept fixed at 0). k is per-sensor
+    # and loaded from epsetup_config[var_id]["calibration"]; missing/k=1.0
+    # is a no-op. Applied BEFORE Phase 4 so calculate_dgp's ev_sensor lookup
+    # (which re-runs calculate_sensor internally) can be paired with an
+    # ev_override at the call site. Reward functions that consume Ev
+    # post-hoc (e.g. comfort_glare_dgps Wienold formula on wpi_cam_1)
+    # automatically pick up the calibrated value via info[...] / obs.
+    import numpy as _np_cal
+    for var_id, var_info in simulation.epsetup_config.items():
+        cal = var_info.get("calibration") if isinstance(var_info, dict) else None
+        if not isinstance(cal, dict):
+            continue
+        if cal.get("method") != "origin_scaling":
+            continue
+        if var_id not in obs_data:
+            continue
+        try:
+            k = float(cal.get("k", 1.0))
+        except (TypeError, ValueError):
+            continue
+        if k == 1.0:
+            continue
+        raw = obs_data[var_id]
+        try:
+            if isinstance(raw, tuple):
+                # eDGP tuple (dgp, ev) — caller will overwrite later in
+                # Phase 4 with calculate_dgp result, so leave this branch
+                # for safety only.
+                continue
+            if isinstance(raw, _np_cal.ndarray):
+                obs_data[var_id] = _np_cal.maximum(0.0, k * raw.astype(float))
+            elif hasattr(raw, "__len__"):
+                obs_data[var_id] = [max(0.0, k * float(x)) for x in raw]
+            else:
+                obs_data[var_id] = max(0.0, k * float(raw))
+        except (TypeError, ValueError) as exc:
+            print(
+                f"[CAL_ERROR] var_id={var_id} k={k} raw={raw!r} exc={exc!r}",
+                flush=True,
+            )
+
     # 4. Process all calculate_edgps / calculate_dgp entries
     #
     # Two glare metrics are supported:
@@ -903,17 +945,21 @@ def controller(state):
 
         try:
             if "calculate_dgp" in var_info:
+                print(f"[DGP_ROUTE] var_id={var_id} path=calculate_dgp ev_sensor={cfg.get('ev_sensor')}", flush=True)
                 obs_data[var_id] = simulation.epsetup.calculate_dgp(
                     zone=zone,
                     cfs_name=cfs_dict,
                     ev_sensor=cfg.get("ev_sensor"),
                     save_hdr=cfg.get("save_hdr"),
                 )
+                print(f"[DGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
             else:
+                print(f"[DGP_ROUTE] var_id={var_id} path=calculate_edgps (NO ev_sensor passed)", flush=True)
                 obs_data[var_id] = simulation.epsetup.calculate_edgps(
                     zone=zone,
                     cfs_name=cfs_dict,
                 )
+                print(f"[EDGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
         except Exception as exc:
             import traceback
             label = "DGP" if "calculate_dgp" in var_info else "EDGP"
@@ -923,7 +969,37 @@ def controller(state):
             )
             traceback.print_exc()
             obs_data[var_id] = (-1.0, -1.0)
-    
+
+        # 4.5. Calibrate Ev component of DGP/eDGP tuple using the configured
+        # ev_sensor's calibration.k. This keeps the Wienold-DGPs reward path
+        # (info['raw_next_edgps_1'][1] as Ev) consistent with the per-sensor
+        # cal scale applied in Phase 3.5. The DGP component (raw[0]) is left
+        # unchanged: it was computed by evalglare from uncalibrated HDR
+        # pixels, so scaling it post-hoc is not physically meaningful; for
+        # the cam Ev sensor k_ev=0.996 the DGP error stays under ~1 %.
+        ev_sensor_name = cfg.get("ev_sensor")
+        if ev_sensor_name:
+            ev_cfg = simulation.epsetup_config.get(ev_sensor_name)
+            ev_cal = ev_cfg.get("calibration") if isinstance(ev_cfg, dict) else None
+            if isinstance(ev_cal, dict) and ev_cal.get("method") == "origin_scaling":
+                try:
+                    k_ev = float(ev_cal.get("k", 1.0))
+                except (TypeError, ValueError):
+                    k_ev = 1.0
+                if k_ev != 1.0:
+                    raw_pair = obs_data.get(var_id)
+                    if isinstance(raw_pair, tuple) and len(raw_pair) == 2 and raw_pair != (-1.0, -1.0):
+                        try:
+                            dgp_v = float(raw_pair[0])
+                            ev_v = float(raw_pair[1])
+                            obs_data[var_id] = (dgp_v, max(0.0, k_ev * ev_v))
+                        except (TypeError, ValueError) as exc:
+                            print(
+                                f"[CAL_EV_ERROR] var_id={var_id} ev_sensor={ev_sensor_name} "
+                                f"k={k_ev} raw={raw_pair!r} exc={exc!r}",
+                                flush=True,
+                            )
+
     # 5. Process lighting power calculations for entries that depend on other values
     for var_id, var_info in simulation.epsetup_config.items():
         if "lighting_power_calculation" in var_info and "depends_on" in var_info:
