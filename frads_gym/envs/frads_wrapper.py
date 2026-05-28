@@ -560,9 +560,13 @@ class FradsSimulation:
             return {'simulation_finished': True}
 
         try:
-            # Send action data to controller
+            # Send action data to controller. Bounded timeout mirrors the
+            # obs_data_queue.get() below: when EnergyPlus finishes, its
+            # controller callback thread stops draining action_data_queue
+            # (maxsize=1), so an unguarded put() on a full queue would block
+            # forever at teardown. Treat a full queue as end-of-simulation.
             if action_data:
-                self.action_data_queue.put(action_data)
+                self.action_data_queue.put(action_data, timeout=120)
 
             # Signal controller to continue
             self.next_step_event.set()
@@ -576,6 +580,11 @@ class FradsSimulation:
                 return {'simulation_finished': True}
 
             return self.obs_data
+        except queue.Full:
+            print("Warning: action queue full for 120s — EnergyPlus consumer "
+                  "gone, treating as simulation finished.")
+            self.simulation_finished = True
+            return {'simulation_finished': True}
         except queue.Empty:
             print("Warning: No observation data received within timeout (120s).")
             return {'error': 'No step data available (timeout)'}
