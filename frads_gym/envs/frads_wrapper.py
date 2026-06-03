@@ -228,6 +228,9 @@ class FradsSimulation:
             print(f"Added lighting to zone {lighting['zone']}")
             
         # Configure glazing systems
+        # Retain the loaded GlazingSystem objects so their per-state per-layer
+        # solar absorptances are available at runtime (e.g. for cfs_thermal).
+        self.glazing_systems = {}
         for glazing in model_setup.get("glazing_systems", []):
             # Check if path is absolute or relative
             if os.path.isabs(glazing["file"]):
@@ -243,8 +246,23 @@ class FradsSimulation:
             # gs = fr.GlazingSystem.from_json(gs_path) # frads version V1
             gs = fr.load_glazing_system(gs_path) # frads version V2
             self.epmodel.add_glazing_system(gs)
+            self.glazing_systems[gs.name] = gs
 
             print(f"Added glazing system from {gs_path}")
+
+        # Configure CFS transient thermal systems (delayed absorbed-solar gain).
+        # Declares one OtherEquipment object per entry; the per-window RC models
+        # and the per-timestep injection are handled in the controller callback.
+        self.cfs_thermal_models = {}   # window key -> CFSThermalModel (state persists across steps)
+        self._cfs_pending_gain = {}    # OtherEquipment name -> watts (set each timestep)
+        for entry in model_setup.get("cfs_thermal_systems", []):
+            self.epmodel.add_other_equipment(
+                name=entry["equipment_name"],
+                zone=entry["zone"],
+                fraction_radiant=entry.get("fraction_radiant", 0.6),
+                replace=entry.get("replace", True),
+            )
+            print(f"Added CFS thermal OtherEquipment '{entry['equipment_name']}' to zone {entry['zone']}")
 
     def _simulation_config(self):
         """Configure simulation parameters using the first available run period."""
@@ -629,13 +647,31 @@ class FradsSimulation:
         """
         Register variables with EnergyPlus and create observation/action spaces.
         """
-        # Register each variable with get_variable_value 
+        # Register each variable with get_variable_value
         for var_id, var_info in self.epsetup_config.items():
             if "get_variable_value" in var_info:
                 var_name = var_info["get_variable_value"]["name"]
                 var_key = var_info["get_variable_value"]["key"]
                 self.epsetup.request_variable(var_name, var_key)
                 print(f"Registered variable: {var_name} for {var_key}")
+
+        # Register variables needed by cfs_thermal entries (the controller reads
+        # these with get_variable_value, which uses non-literal keys, so the
+        # AST-based auto-request cannot pick them up — request them explicitly).
+        for var_id, var_info in self.epsetup_config.items():
+            if "cfs_thermal" in var_info:
+                ct = var_info["cfs_thermal"]
+                for win in ct.get("windows", {}):
+                    self.epsetup.request_variable(
+                        "Surface Outside Face Incident Solar Radiation Rate per Area", win)
+                    self.epsetup.request_variable(
+                        "Surface Inside Face Convection Heat Transfer Coefficient", win)
+                    if ct.get("absorptance_mode") == "angular":
+                        self.epsetup.request_variable(
+                            "Surface Outside Face Beam Solar Incident Angle Cosine Value", win)
+                self.epsetup.request_variable("Zone Mean Air Temperature", ct["zone"])
+                self.epsetup.request_variable("Site Outdoor Air Drybulb Temperature", "Environment")
+                print(f"Registered cfs_thermal variables for {var_id} ({len(ct.get('windows', {}))} windows)")
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +874,76 @@ def controller(state):
         if "get_cfs_state" in var_info:
             window_key = var_info["get_cfs_state"]["key"]
             obs_data[var_id] = simulation.epsetup.get_cfs_state(window_key)
-    
+
+    # 2.5 Process all cfs_thermal entries: advance a transient lumped-capacitance
+    #     RC glass model per window (state persists), and inject the ENERGY-NEUTRAL
+    #     delayed absorbed-solar inward gain (transient - steady) as an
+    #     OtherEquipment power level. Transmission stays in the optical CFS path.
+    for var_id, var_info in simulation.epsetup_config.items():
+        if "cfs_thermal" not in var_info:
+            continue
+        from frads.cfs_thermal import CFSThermalModel
+        ct = var_info["cfs_thermal"]
+        dt_s = float(zone_ts_hours) * 3600.0
+        try:
+            t_in = simulation.epsetup.get_variable_value("Zone Mean Air Temperature", ct["zone"])
+            t_out = simulation.epsetup.get_variable_value(
+                "Site Outdoor Air Drybulb Temperature", "Environment")
+        except Exception as exc:
+            if not getattr(simulation, "_cfs_driver_warned", False):
+                print(f"[controller] cfs_thermal {var_id}: driver read failed: {exc}")
+                simulation._cfs_driver_warned = True
+            continue
+        total_gain_w = 0.0
+        pane_temps = None
+        for win, area in ct["windows"].items():
+            cfs_name = simulation.epsetup.get_cfs_state(win)
+            gs_name = ct.get("state_to_gs", {}).get(cfs_name, cfs_name)
+            gs = simulation.glazing_systems.get(gs_name)
+            if gs is None:
+                continue
+            model = simulation.cfs_thermal_models.get(win)
+            if model is None:
+                model = CFSThermalModel.from_glazing_system(
+                    gs,
+                    overrides={int(k): v for k, v in ct.get("pane_overrides", {}).items()},
+                    h_out=ct.get("h_out", 23.0),
+                    h_in=ct.get("h_in", 8.0),
+                    gap_nu=ct.get("gap_nu", 1.0),
+                    absorptance_mode=ct.get("absorptance_mode", "hemispherical"),
+                    init_temp_c=float(t_in),
+                )
+                model._gs_name = gs_name
+                simulation.cfs_thermal_models[win] = model
+            elif getattr(model, "_gs_name", None) != gs_name:
+                model.set_absorptance(gs.solar_front_absorptance)  # tint switched; keep T
+                model._gs_name = gs_name
+            incident = simulation.epsetup.get_variable_value(
+                "Surface Outside Face Incident Solar Radiation Rate per Area", win)
+            try:
+                h_in = simulation.epsetup.get_variable_value(
+                    "Surface Inside Face Convection Heat Transfer Coefficient", win)
+            except Exception:
+                h_in = ct.get("h_in", 8.0)
+            res = model.step(float(incident), float(t_out), float(t_in), dt_s, h_in=float(h_in))
+            total_gain_w += res.lag_correction_wm2 * float(area)
+            pane_temps = res.pane_temps_c
+        simulation._cfs_pending_gain[ct["equipment_name"]] = total_gain_w
+        obs_data[var_id] = total_gain_w
+        if pane_temps is not None and var_info.get("log_pane_temps"):
+            for k, t in enumerate(pane_temps):
+                obs_data[f"{var_id}_pane{k}"] = t
+        # Inject now (sets the OtherEquipment power for the next zone timestep,
+        # same latency as actuate_cfs_state). Negative values are allowed.
+        try:
+            simulation.epsetup.actuate(
+                "OtherEquipment", "Power Level", ct["equipment_name"], total_gain_w)
+        except Exception as exc:
+            if not getattr(simulation, "_cfs_actuator_warned", False):
+                print(f"[controller] cfs_thermal: OtherEquipment 'Power Level' actuator "
+                      f"unavailable ({exc}); delayed gain NOT injected.")
+                simulation._cfs_actuator_warned = True
+
     # 3. Process all calculate_illuminance entries
     for var_id, var_info in simulation.epsetup_config.items():
         if "calculate_illuminance" in var_info:
