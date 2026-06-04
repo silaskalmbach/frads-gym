@@ -571,9 +571,21 @@ class FradsEnv(gym.Env):
                     processed_obs[key] = np.array([normalized_value], dtype=np.float32)
             else:
                 # Default for keys not found in raw_obs
-                processed_obs[key] = np.zeros(self.observation_space.spaces[key].shape, 
+                processed_obs[key] = np.zeros(self.observation_space.spaces[key].shape,
                                              dtype=self.observation_space.spaces[key].dtype)
-        
+
+        # Enforce the declared observation_space shape for every key. The scalar
+        # standardisation path (ema_zscore) can return a (1,)-array which then
+        # gets wrapped to (1,1); with SubprocVecEnv (n_envs>1) that stacks to
+        # (n_envs,1,1) and breaks SB3's DictRolloutBuffer ("could not broadcast
+        # (N,1,1) into (N,1)"). Reshaping to the space shape is a no-op when the
+        # obs is already correct (size matches) and fixes the nested case.
+        for _k, _space in self.observation_space.spaces.items():
+            _arr = np.asarray(processed_obs[_k], dtype=_space.dtype)
+            if _arr.shape != tuple(_space.shape) and _arr.size == int(np.prod(_space.shape)):
+                _arr = _arr.reshape(_space.shape)
+            processed_obs[_k] = _arr
+
         return processed_obs
     
 
