@@ -584,13 +584,17 @@ class FradsSimulation:
             # (maxsize=1), so an unguarded put() on a full queue would block
             # forever at teardown. Treat a full queue as end-of-simulation.
             if action_data:
-                self.action_data_queue.put(action_data, timeout=120)
+                self.action_data_queue.put(action_data, timeout=300)
 
             # Signal controller to continue
             self.next_step_event.set()
 
-            # Wait for data from controller
-            self.obs_data = self.obs_data_queue.get(timeout=120)
+            # Wait for data from controller. 300s (was 120s): under multi-env
+            # contention a single EnergyPlus step (e.g. a periodic shadowing
+            # recalc on complex context geometry, or a transient host load spike)
+            # can legitimately stall >120s. The longer bound lets such steps
+            # complete instead of returning a key-less {'error'} obs.
+            self.obs_data = self.obs_data_queue.get(timeout=300)
 
             # Check if the simulation has ended
             if isinstance(self.obs_data, dict) and self.obs_data.get('simulation_finished', False):
@@ -599,12 +603,12 @@ class FradsSimulation:
 
             return self.obs_data
         except queue.Full:
-            print("Warning: action queue full for 120s — EnergyPlus consumer "
+            print("Warning: action queue full for 300s — EnergyPlus consumer "
                   "gone, treating as simulation finished.")
             self.simulation_finished = True
             return {'simulation_finished': True}
         except queue.Empty:
-            print("Warning: No observation data received within timeout (120s).")
+            print("Warning: No observation data received within timeout (300s).")
             return {'error': 'No step data available (timeout)'}
 
     def shutdown(self):

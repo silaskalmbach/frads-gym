@@ -345,7 +345,22 @@ class FradsEnv(gym.Env):
     
         # Apply action and get next observation
         self.raw_next_obs = self.simulation.steps(sim_action)
-        
+
+        # A per-step obs-queue timeout (EnergyPlus callback stalled longer than the
+        # queue timeout under multi-env resource contention) returns
+        # {'error': ...} with NO observation keys. Passing it downstream KeyErrors
+        # the reward and kills the whole SubprocVecEnv worker → the entire training
+        # dies. Treat it as a hard episode end: truncate WITHOUT setting
+        # truncated_flag, so the next reset() runs a full simulation.reset()
+        # (restart EnergyPlus) and re-syncs the env↔EP step coupling.
+        if isinstance(self.raw_next_obs, dict) and 'error' in self.raw_next_obs:
+            next_observation = {key: np.zeros(space.shape, dtype=space.dtype)
+                                for key, space in self.observation_space.spaces.items()}
+            self.info['sim_step_error'] = self.raw_next_obs.get('error')
+            print(f"WARNING: per-step obs timeout/error -> truncating episode for "
+                  f"EnergyPlus restart: {self.raw_next_obs.get('error')}")
+            return next_observation, 0.0, False, True, self.info
+
         # Check if simulation is finished before processing further
         if self.raw_next_obs.get('simulation_finished', False):
             truncated = True # Episode is finished
