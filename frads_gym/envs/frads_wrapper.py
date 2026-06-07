@@ -334,7 +334,7 @@ class FradsSimulation:
                                  ((end_date - start_date).total_seconds()/3600))
         print(f"Total number of timesteps: {self.sum_timesteps}")
 
-    def _wait_for_simulation_to_finish(self, timeout=300):
+    def _wait_for_simulation_to_finish(self, timeout=600):
         """
         Wait until the simulation signals completion.
 
@@ -345,9 +345,23 @@ class FradsSimulation:
             timeout: Maximum seconds to wait before giving up.
         """
         start = time.time()
-        # Signal the simulation to shut down and wake the controller
+        # Signal the simulation to shut down and wake the controller. With the
+        # shutdown flag set, the controller callback's bounded put()/wait()
+        # (see end of `controller`) return instead of blocking, so EnergyPlus
+        # can regain control and observe the stop request below.
         self.shutdown_event.set()
         self.next_step_event.set()
+
+        # Ask EnergyPlus to halt so _run_simulation()'s epsetup.run() returns
+        # and the background thread can be joined BEFORE the caller's
+        # epsetup.close() -> api.state_manager.delete_state(). Calling
+        # delete_state() while that run() thread is still live blocks the main
+        # thread forever in a futex (observed 2026-06-06 deadlock at 99.1%).
+        if hasattr(self, 'epsetup'):
+            try:
+                self.epsetup.api.runtime.stop_simulation(self.epsetup.state)
+            except Exception as e:
+                print(f"Warning: stop_simulation request failed: {e}")
 
         while not self.simulation_finished:
             elapsed = time.time() - start
@@ -364,6 +378,22 @@ class FradsSimulation:
 
         # Drain any remaining items from queues
         self._drain_queues()
+
+        # Join the EnergyPlus thread before the caller calls epsetup.close().
+        # If it refuses to exit (truly stuck), leave it as an abandoned daemon
+        # and flag the caller to SKIP close() so delete_state() cannot deadlock.
+        self.ep_thread_alive_after_wait = False
+        thread = getattr(self, 'simulation_thread', None)
+        if thread is not None and thread.is_alive():
+            join_deadline = time.time() + 30
+            while thread.is_alive() and time.time() < join_deadline:
+                self._drain_queues()
+                thread.join(timeout=1.0)
+            if thread.is_alive():
+                self.ep_thread_alive_after_wait = True
+                print("Warning: EnergyPlus thread did not exit after stop request; "
+                      "abandoning it (daemon) and SKIPPING close() to avoid a "
+                      "delete_state() deadlock. A fresh state will be created.")
         print("Simulation appears to be finished.")
 
     def _drain_queues(self):
@@ -422,10 +452,14 @@ class FradsSimulation:
         # If a simulation is already running, shut it down
         if hasattr(self, 'epsetup'):
             self._wait_for_simulation_to_finish()
-            try:
-                self.epsetup.close()
-            except Exception as e:
-                print(f"Warning: Error closing previous EnergyPlus session: {e}")
+            if not getattr(self, 'ep_thread_alive_after_wait', False):
+                try:
+                    self.epsetup.close()
+                except Exception as e:
+                    print(f"Warning: Error closing previous EnergyPlus session: {e}")
+            else:
+                print("Warning: skipping epsetup.close() — previous EnergyPlus "
+                      "thread still alive; leaving its state to be GC'd.")
 
         # Reset all synchronization primitives for the new episode
         self.shutdown_event.clear()
@@ -531,9 +565,10 @@ class FradsSimulation:
         # Register the controller callback for each timestep
         self._register_controller()
 
-        # Start the simulation in a background thread
-        simulation_thread = threading.Thread(target=self._run_simulation, daemon=True)
-        simulation_thread.start()
+        # Start the simulation in a background thread. Stored on self so
+        # _wait_for_simulation_to_finish() can join it before close().
+        self.simulation_thread = threading.Thread(target=self._run_simulation, daemon=True)
+        self.simulation_thread.start()
 
     def _run_simulation(self):
         """
@@ -557,8 +592,14 @@ class FradsSimulation:
                     output_prefix=output_prefix)
         finally:
             print("EnergyPlus simulation completed.")
-            # Signal that the simulation has ended
-            self.obs_data_queue.put({'simulation_finished': True})
+            # Signal that the simulation has ended. Bounded put: if the main
+            # thread already stopped draining (forced teardown), an unguarded
+            # put on the maxsize=1 queue would block this thread forever and
+            # prevent it from being joined.
+            try:
+                self.obs_data_queue.put({'simulation_finished': True}, timeout=10)
+            except queue.Full:
+                pass
             
     def steps(self, action_data=None):
         """
@@ -584,17 +625,18 @@ class FradsSimulation:
             # (maxsize=1), so an unguarded put() on a full queue would block
             # forever at teardown. Treat a full queue as end-of-simulation.
             if action_data:
-                self.action_data_queue.put(action_data, timeout=300)
+                self.action_data_queue.put(action_data, timeout=600)
 
             # Signal controller to continue
             self.next_step_event.set()
 
-            # Wait for data from controller. 300s (was 120s): under multi-env
-            # contention a single EnergyPlus step (e.g. a periodic shadowing
-            # recalc on complex context geometry, or a transient host load spike)
-            # can legitimately stall >120s. The longer bound lets such steps
+            # Wait for data from controller. 600s (was 120s, then 300s): under
+            # multi-env contention the one-time EnergyPlus solar/shadowing init
+            # (FullExteriorWithReflections over ~1465 shading surfaces, started
+            # by 4 EP processes at once) and the periodic 30-day shadow recompute
+            # can legitimately stall >300s. The longer bound lets such steps
             # complete instead of returning a key-less {'error'} obs.
-            self.obs_data = self.obs_data_queue.get(timeout=300)
+            self.obs_data = self.obs_data_queue.get(timeout=600)
 
             # Check if the simulation has ended
             if isinstance(self.obs_data, dict) and self.obs_data.get('simulation_finished', False):
@@ -603,12 +645,12 @@ class FradsSimulation:
 
             return self.obs_data
         except queue.Full:
-            print("Warning: action queue full for 300s — EnergyPlus consumer "
+            print("Warning: action queue full for 600s — EnergyPlus consumer "
                   "gone, treating as simulation finished.")
             self.simulation_finished = True
             return {'simulation_finished': True}
         except queue.Empty:
-            print("Warning: No observation data received within timeout (300s).")
+            print("Warning: No observation data received within timeout (600s).")
             return {'error': 'No step data available (timeout)'}
 
     def shutdown(self):
@@ -624,8 +666,10 @@ class FradsSimulation:
         # Wait for the simulation to finish (signals shutdown internally)
         self._wait_for_simulation_to_finish()
 
-        # Properly close EnergyPlus simulation
-        if hasattr(self, 'epsetup'):
+        # Properly close EnergyPlus simulation (unless the thread is still alive,
+        # in which case close() -> delete_state() would deadlock — see
+        # _wait_for_simulation_to_finish).
+        if hasattr(self, 'epsetup') and not getattr(self, 'ep_thread_alive_after_wait', False):
             try:
                 self.epsetup.close()
                 print("EnergyPlus resources released.")
@@ -968,7 +1012,8 @@ def controller(state):
                 dni = simulation.epsetup.get_direct_normal_irradiance()
                 dhi = simulation.epsetup.get_diffuse_horizontal_irradiance()
                 wf = simulation.epsetup.rworkflows[zone]
-                print(f"[CALLER_CALC_SENSOR] var_id={var_id} workflow_type={type(wf).__name__} method_qualname={wf.calculate_sensor.__qualname__}", flush=True)
+                if os.environ.get("FRADS_SENSOR_DEBUG"):
+                    print(f"[CALLER_CALC_SENSOR] var_id={var_id} workflow_type={type(wf).__name__} method_qualname={wf.calculate_sensor.__qualname__}", flush=True)
                 wpi_result = wf.calculate_sensor(
                     var_id, cfs_dict, date_time, dni, dhi
                 )
@@ -1203,13 +1248,28 @@ def controller(state):
             obs_data[var_id] = total_energy
 
     ###################################
-    # Do NOT CHANGE the following lines
-    # Put data into the queue for external controller
-    simulation.obs_data_queue.put(obs_data)
-    
-    # Wait for signal to continue
-    simulation.next_step_event.wait()
+    # Put data into the queue for external controller.
+    # Bounded + shutdown-aware: a plain put()/wait() on the maxsize=1 queue
+    # blocks this EnergyPlus thread forever if the main thread stopped draining
+    # (forced teardown after a >timeout step). Re-checking shutdown_event lets
+    # the thread return so EnergyPlus can honor stop_simulation() and exit,
+    # instead of wedging the subsequent delete_state() (2026-06-06 deadlock).
+    while not simulation.shutdown_event.is_set():
+        try:
+            simulation.obs_data_queue.put(obs_data, timeout=1.0)
+            break
+        except queue.Full:
+            continue
+    if simulation.shutdown_event.is_set():
+        return
+
+    # Wait for signal to continue (bounded + shutdown-aware)
+    while not simulation.next_step_event.wait(timeout=1.0):
+        if simulation.shutdown_event.is_set():
+            return
     simulation.next_step_event.clear()
+    if simulation.shutdown_event.is_set():
+        return
 
     # Process action data from external controller
     action_values = None

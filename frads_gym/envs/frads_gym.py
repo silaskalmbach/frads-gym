@@ -287,8 +287,22 @@ class FradsEnv(gym.Env):
             # This ensures stable normalization across multiple training episodes.
             # stat_trackers (Welford) and observation_history_dynamic are NOT reset.
 
-        # Get initial observation (without taking an action)
+        # Get initial observation (without taking an action). If the first step
+        # after an EnergyPlus (re)start times out (heavy solar/shadowing init
+        # under multi-env contention), the env<->EP coupling is desynced; retry
+        # a bounded number of full restarts instead of silently continuing on a
+        # key-less {'error'} obs (2026-06-06 hardening — this path was previously
+        # unguarded; the step() path already truncates on the same error).
         self.raw_next_obs = self.simulation.steps()
+        _reset_restart_tries = 0
+        while (isinstance(self.raw_next_obs, dict)
+               and 'error' in self.raw_next_obs
+               and _reset_restart_tries < 2):
+            _reset_restart_tries += 1
+            print(f"WARNING: obs-timeout during reset() init "
+                  f"(restart {_reset_restart_tries}/2) -> full EnergyPlus restart")
+            self.simulation.reset()
+            self.raw_next_obs = self.simulation.steps()
 
         # Process observation
         self.observation = self._process_observation(self.raw_next_obs)
