@@ -458,8 +458,28 @@ class FradsSimulation:
                 except Exception as e:
                     print(f"Warning: Error closing previous EnergyPlus session: {e}")
             else:
-                print("Warning: skipping epsetup.close() — previous EnergyPlus "
-                      "thread still alive; leaving its state to be GC'd.")
+                # The previous EnergyPlus thread is wedged in an uninterruptible
+                # C call (e.g. the FullExteriorWithReflections solar-init under
+                # memory pressure) and could not be stopped/joined. Abandoning it
+                # and building a fresh EnergyPlusSetup in THIS process is unsafe:
+                # the live daemon leaks its multi-GB EP state (a live thread is
+                # never GC'd, so "leaving its state to be GC'd" never happens) and
+                # a second concurrent EP run in the same process deadlocks at the
+                # solar init (observed 2026-06-06 v3@99% / 2026-06-08 v5@33%, 0%
+                # CPU, host swap-saturated for ~9h). Under SubprocVecEnv every env
+                # owns its own subprocess, so the only clean recovery is to let
+                # THIS subprocess die: the OS reclaims the leaked state, and
+                # SubprocVecEnv surfaces the dead worker -> the trial fails fast
+                # (CheckpointCallback artifacts survive) instead of wedging the
+                # whole host. os._exit bypasses interpreter cleanup that could
+                # itself hang on the stuck C thread.
+                print("FATAL: EnergyPlus thread unrecoverable after stop+join; "
+                      "exiting this env subprocess so a fresh process can replace "
+                      "it (prevents zombie-thread leak + in-process solar-init "
+                      "deadlock — see frads_wrapper reset()).", flush=True)
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(1)
 
         # Reset all synchronization primitives for the new episode
         self.shutdown_event.clear()
