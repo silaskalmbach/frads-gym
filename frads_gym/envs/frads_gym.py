@@ -590,6 +590,43 @@ class FradsEnv(gym.Env):
                             raw_array = np.array(raw_value, dtype=np.float32)
                             normalized = (raw_array - norm_low) / (norm_high - norm_low)
                             processed_obs[key] = np.clip(normalized, obs_low, obs_high).astype(np.float32)
+                        elif ("observation_standardize" in config
+                              and config["observation_standardize"]["active"]):
+                            # Standardize element-wise (e.g. ema_zscore mode).
+                            # Previously this branch did not exist and array obs
+                            # passed through RAW (unclipped) whenever
+                            # observation_normalize was inactive — even with an
+                            # active observation_standardize config.
+                            #
+                            # Each element gets its OWN tracker key "key[i]":
+                            # array elements (e.g. edgps_1 = [DGP, Ev]) live on
+                            # different scales and must not share EMA/Welford
+                            # statistics. The parent key's config is passed
+                            # explicitly so _find_key_in_config is never called
+                            # with the synthetic element key.
+                            # observation_space low/high may be per-element
+                            # lists, but _apply_standardization_bounds expects
+                            # scalars → forward the matching bound entry per
+                            # element via a shallow config copy.
+                            obs_space_cfg = config.get("observation_space", {})
+                            obs_low = obs_space_cfg.get("low", 0)
+                            obs_high = obs_space_cfg.get("high", 1)
+                            raw_array = np.asarray(raw_value, dtype=np.float64)
+                            flat = raw_array.ravel()
+                            standardized = np.empty(flat.shape, dtype=np.float32)
+                            for i, value_i in enumerate(flat):
+                                low_i = (obs_low[i]
+                                         if isinstance(obs_low, (list, tuple, np.ndarray))
+                                         else obs_low)
+                                high_i = (obs_high[i]
+                                          if isinstance(obs_high, (list, tuple, np.ndarray))
+                                          else obs_high)
+                                elem_config = dict(config)
+                                elem_config["observation_space"] = {
+                                    **obs_space_cfg, "low": low_i, "high": high_i}
+                                standardized[i] = self._standardize_observation(
+                                    f"{key}[{i}]", float(value_i), config=elem_config)
+                            processed_obs[key] = standardized.reshape(raw_array.shape)
                         else:
                             processed_obs[key] = np.array(raw_value, dtype=np.float32)
                     else:
