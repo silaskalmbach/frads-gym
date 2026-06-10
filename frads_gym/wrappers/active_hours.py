@@ -2,7 +2,8 @@
 
 The wrapper internally fast-forwards through timesteps where the facade
 has no influence (no solar radiation and/or no occupants), holding the
-last action constant.  SB3 only sees transitions from active hours.
+last action constant (default) or applying a fixed ``inactive_action``.
+SB3 only sees transitions from active hours.
 
 All timesteps are still simulated and logged by FradsEnv — the wrapper
 only controls which transitions are exposed to the training loop.
@@ -29,6 +30,11 @@ class ActiveHoursWrapper(gym.Wrapper):
             for the GHI check.  Default: DNI + DHI.
         occupancy_key: Info-dict key (without ``raw_next_`` prefix) for
             the occupancy check.
+        inactive_action: Action applied during fast-forwarded (inactive)
+            timesteps.  ``None`` (default) keeps the legacy behaviour: hold
+            the agent's last action (zeros before the first agent step).
+            A float is broadcast to the full action shape, e.g. ``0.0`` =
+            all panes fully tinted under the FTG ``facade_state_mapping``.
     """
 
     def __init__(
@@ -39,6 +45,7 @@ class ActiveHoursWrapper(gym.Wrapper):
         mode: str = "or",
         solar_keys: Optional[List[str]] = None,
         occupancy_key: str = "occupant_count_1",
+        inactive_action: Optional[float] = None,
     ):
         super().__init__(env)
         self.check_solar = check_solar
@@ -49,8 +56,14 @@ class ActiveHoursWrapper(gym.Wrapper):
             "diffuse_horizontal_irradiance",
         ]
         self.occupancy_key = occupancy_key
+        self.inactive_action = inactive_action
         self._last_action: Optional[np.ndarray] = None
         self._default_action = np.zeros(env.action_space.shape, dtype=np.float32)
+        self._inactive_action_arr: Optional[np.ndarray] = (
+            None if inactive_action is None
+            else np.full(env.action_space.shape, float(inactive_action),
+                         dtype=np.float32)
+        )
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -62,11 +75,12 @@ class ActiveHoursWrapper(gym.Wrapper):
 
         # Simulation may start at midnight (inactive).
         # Fast-forward to first active timestep.
+        ff_action = (self._inactive_action_arr
+                     if self._inactive_action_arr is not None
+                     else self._default_action)
         while not self._is_active(info):
             info["agent_active"] = False
-            obs, _reward, terminated, truncated, info = self.env.step(
-                self._default_action
-            )
+            obs, _reward, terminated, truncated, info = self.env.step(ff_action)
             if terminated or truncated:
                 break
 
@@ -84,13 +98,14 @@ class ActiveHoursWrapper(gym.Wrapper):
             return obs, reward, terminated, truncated, info
 
         # 2. Fast-forward through inactive timesteps.
+        ff_action = (self._inactive_action_arr
+                     if self._inactive_action_arr is not None
+                     else self._last_action)
         skipped = False
         while not self._is_active(info):
             skipped = True
             info["agent_active"] = False
-            obs, _reward, terminated, truncated, info = self.env.step(
-                self._last_action
-            )
+            obs, _reward, terminated, truncated, info = self.env.step(ff_action)
             if terminated or truncated:
                 break
 

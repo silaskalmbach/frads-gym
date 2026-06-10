@@ -77,6 +77,27 @@ class FradsEnv(gym.Env):
             self.epsetup_config = {k: v for k, v in loaded_config.items() if isinstance(v, dict) and v.get("active", True)}
             print(f"Loaded {len(loaded_config)} config entries, kept {len(self.epsetup_config)} active entries")
 
+        # Expose effective per-sensor calibration factors to reward functions
+        # via info['calibration_<var_id>_k'] (2026-06-10). The frads_wrapper
+        # controller (Phase 3.5) applies obs = max(0, k*raw) for every config
+        # entry with {"calibration": {"method": "origin_scaling", "k": ...}},
+        # so info['raw_next_<var_id>'] already carries the CALIBRATED value.
+        # Presence of this key is the contract telling rewards (e.g.
+        # comfort_glare_cal) NOT to apply their static legacy fallback k again
+        # — this rules out double application by construction. The condition
+        # below mirrors the wrapper's exactly (dict, method, parseable k).
+        # self.info is only mutated in place, so keys set here persist for
+        # every reset()/step() info the reward function sees.
+        for _var_id, _var_info in getattr(self, 'epsetup_config', {}).items():
+            _cal = _var_info.get("calibration") if isinstance(_var_info, dict) else None
+            if not isinstance(_cal, dict) or _cal.get("method") != "origin_scaling":
+                continue
+            try:
+                _k = float(_cal.get("k", 1.0))
+            except (TypeError, ValueError):
+                continue
+            self.info[f'calibration_{_var_id}_k'] = _k
+
         # Initialize the EnergyPlus simulation
         self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, run_periods=run_periods, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance, staggered_start=staggered_start, env_id=env_id, n_envs=n_envs)
         
