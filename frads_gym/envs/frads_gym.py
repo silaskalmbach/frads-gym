@@ -132,6 +132,29 @@ class FradsEnv(gym.Env):
                 print(f"[FradsEnv env_id={env_id}] no pickle for city='{city_id}' "
                       f"in {normalizer_state_dir} — cold-start (zero-shot)")
 
+            # Register a best-effort normalizer-rescue hook on the simulation.
+            # frads_wrapper.reset() calls this zero-arg hook (in a daemon
+            # thread, join(10)) right before os._exit(1) when an EnergyPlus
+            # thread is unrecoverable, so the running obs-normalizer trackers
+            # accumulated this episode survive the hard exit instead of
+            # cold-starting the replacement process. Only registered when a
+            # per-city normalizer_state_dir is configured (otherwise there is
+            # nowhere to persist to). try/except-safe by construction.
+            _hook_dir = normalizer_state_dir
+            _hook_city = city_id
+
+            def _normalizer_save_hook():
+                try:
+                    self.save_normalizer_state(
+                        os.path.join(
+                            _hook_dir, f"normalizer_state_{_hook_city}.pkl"
+                        )
+                    )
+                except Exception:
+                    pass
+
+            self.simulation._normalizer_save_hook = _normalizer_save_hook
+
     # ------------------------------------------------------------------
     # Observation-normalizer state persistence (training → eval handoff)
     # ------------------------------------------------------------------
@@ -225,6 +248,7 @@ class FradsEnv(gym.Env):
           * ``observation_history``      — sample list for static min-max
           * ``observation_history_dynamic`` — sliding window for dyn-norm
           * ``_obs_welford_trackers``    — Welford used inside dyn-normaliser
+          * ``_ema_quantile_trackers``   — EMQ P5/P95 (used by ema_minmax)
 
         Static-config-only modes (raw, static_minmax with fixed bounds from
         JSON) don't rely on any of these; loading into them is a no-op.
@@ -236,6 +260,7 @@ class FradsEnv(gym.Env):
             "obs_history":   getattr(self, "observation_history", {}),
             "obs_history_dynamic":    getattr(self, "observation_history_dynamic", {}),
             "obs_welford_trackers":   getattr(self, "_obs_welford_trackers", {}),
+            "ema_quantile_trackers":  getattr(self, "_ema_quantile_trackers", {}),
         }
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "wb") as f:
@@ -267,6 +292,9 @@ class FradsEnv(gym.Env):
         self.observation_history        = state.get("obs_history", {})
         self.observation_history_dynamic = state.get("obs_history_dynamic", {})
         self._obs_welford_trackers      = state.get("obs_welford_trackers", {})
+        # Backward-compatible: pickles written before EMQ persistence lack this
+        # key → clean-init to {} (never raises), same-version so replays still load.
+        self._ema_quantile_trackers     = state.get("ema_quantile_trackers", {})
 
     def _try_load_normalizer_from_dir(self, normalizer_state_dir: str, city_id: str) -> bool:
         """Attempt to load a city-specific normalizer pickle from the given directory.
@@ -287,6 +315,7 @@ class FradsEnv(gym.Env):
     def reset(self, seed=None, options=None):
         """Reset the environment and return the initial observation."""
 
+        was_truncated = self.truncated_flag
         if self.truncated_flag:
             # Episode was truncated mid-simulation (e.g. day/month boundary).
             # The EnergyPlus process is still running — just reset the flag
@@ -302,6 +331,14 @@ class FradsEnv(gym.Env):
 
             # Full reset: restart EnergyPlus for a new episode.
             self.simulation.reset()
+
+            # A full reset starts a new (possibly weather-rotated) year; drop
+            # the last-seen datetime so _check_time_period_change re-seeds on
+            # the first step of the new episode instead of comparing e.g.
+            # Jan-1 against the previous episode's December end (which would
+            # trigger a spurious 1-step truncation right after every reset).
+            if hasattr(self, 'previous_datetime'):
+                del self.previous_datetime
 
             # Observation normalization statistics persist across episode resets
             # (analogous to reward_history in RewardProcessingMixin).
@@ -329,10 +366,35 @@ class FradsEnv(gym.Env):
         self.observation = self._process_observation(self.raw_next_obs)
         self.raw_observation = self.raw_next_obs
 
-        # Reset per-episode step counter (raw_next_step_idx semantics: index of
-        # the latest simulation step that produced raw_next_obs, starting at 0
-        # for the initial observation returned by reset()).
-        self._step_idx = 0
+        # active_hours root fix: self.info is mutated in place and persists
+        # across episode boundaries, so after a mid-episode truncation it still
+        # carries the PREVIOUS episode's raw_next_* gating fields plus stale
+        # control flags. A wrapper (e.g. ActiveHoursWrapper) that inspects the
+        # reset info would otherwise decide activeness on pre-episode data.
+        # Refresh raw_next_* from the fresh reset observation and drop the stale
+        # flags so the reset info reflects only this new episode.
+        if (isinstance(self.raw_next_obs, dict)
+                and 'error' not in self.raw_next_obs
+                and not self.raw_next_obs.get('simulation_finished', False)):
+            for key, value in self.raw_next_obs.items():
+                if not isinstance(value, (int, float, np.number)):
+                    self.info[f'raw_next_{key}'] = value
+                else:
+                    self.info[f'raw_next_{key}'] = np.array([value], dtype=np.float32)
+        self.info.pop('time_period_change', None)
+        self.info.pop('sim_step_error', None)
+
+        # Step-index bookkeeping (raw_next_step_idx semantics: index of the
+        # latest simulation step that produced raw_next_obs). On a full reset a
+        # fresh EnergyPlus process starts the year at 0. On a truncated
+        # continuation EnergyPlus keeps running and reset() advanced it by one
+        # step above, so the running year index must CONTINUE — resetting it to
+        # 0 would make the R1+ oracle lookup (info['raw_next_step_idx']) read
+        # January rows for every post-truncation month.
+        if was_truncated:
+            self._step_idx = getattr(self, '_step_idx', 0) + 1
+        else:
+            self._step_idx = 0
 
         # Return initial observation and info
         self.info['number_of_timesteps_per_hour'] = self.simulation.number_of_timesteps_per_hour
@@ -453,8 +515,14 @@ class FradsEnv(gym.Env):
             self.info['raw_next_city_id'] = [city_id]
             self.info['raw_next_step_idx'] = np.array([self._step_idx], dtype=np.int64)
 
-            # Calculate reward for this last step
-            reward = self.reward_function(self.observation, action, next_observation, self.info)
+            # Calculate reward for this last step. Apply the same agent_active
+            # gate as the normal branch so an inactive (fast-forwarded /
+            # night-unoccupied) final step does not pollute reward-normalisation
+            # statistics with a spurious value.
+            if self.info.get('agent_active', True):
+                reward = self.reward_function(self.observation, action, next_observation, self.info)
+            else:
+                reward = 0.0
 
             # Update info
             self.info['time_period_change'] = True
@@ -602,15 +670,51 @@ class FradsEnv(gym.Env):
                     if hasattr(self, 'epsetup_config') and key in self.epsetup_config:
                         config = self.epsetup_config[key]
                         if "observation_normalize" in config and config["observation_normalize"]["active"]:
-                            norm_low = np.array(config["observation_normalize"]["low"])
-                            norm_high = np.array(config["observation_normalize"]["high"])
-                            obs_low = np.array(config["observation_space"]["low"])
-                            obs_high = np.array(config["observation_space"]["high"])
-                            
-                            # Normalize array values
-                            raw_array = np.array(raw_value, dtype=np.float32)
-                            normalized = (raw_array - norm_low) / (norm_high - norm_low)
-                            processed_obs[key] = np.clip(normalized, obs_low, obs_high).astype(np.float32)
+                            # Element-wise, consistent with the scalar path
+                            # (_normalize_observation): scale into the obs-space
+                            # bounds (NOT a hardcoded [0,1]) and honour the
+                            # dynamic mode. Previously this branch mapped to
+                            # [0,1] and ignored dynamic/ema entirely, so array
+                            # obs with obs bounds != [0,1] came out mis-scaled.
+                            # Each element gets its OWN tracker key "key[i]"
+                            # (array elements live on different scales — same
+                            # rationale as the standardize branch below), and
+                            # the matching per-element bound entry is forwarded.
+                            norm_config = config["observation_normalize"]
+                            obs_space_cfg = config["observation_space"]
+                            obs_low = obs_space_cfg["low"]
+                            obs_high = obs_space_cfg["high"]
+                            norm_low = norm_config["low"]
+                            norm_high = norm_config["high"]
+                            dyn_mode = norm_config.get("dynamic", False)
+                            raw_array = np.asarray(raw_value, dtype=np.float64)
+                            flat = raw_array.ravel()
+                            normalized = np.empty(flat.shape, dtype=np.float32)
+                            for i, value_i in enumerate(flat):
+                                low_i = (obs_low[i]
+                                         if isinstance(obs_low, (list, tuple, np.ndarray))
+                                         else obs_low)
+                                high_i = (obs_high[i]
+                                          if isinstance(obs_high, (list, tuple, np.ndarray))
+                                          else obs_high)
+                                nlow_i = (norm_low[i]
+                                          if isinstance(norm_low, (list, tuple, np.ndarray))
+                                          else norm_low)
+                                nhigh_i = (norm_high[i]
+                                           if isinstance(norm_high, (list, tuple, np.ndarray))
+                                           else norm_high)
+                                elem_norm_config = {**norm_config, "low": nlow_i, "high": nhigh_i}
+                                elem_key = f"{key}[{i}]"
+                                if dyn_mode == "ema":
+                                    normalized[i] = self._ema_normalize_observation(
+                                        elem_key, float(value_i), elem_norm_config, low_i, high_i)
+                                elif dyn_mode:
+                                    normalized[i] = self._dynamic_normalize_observation(
+                                        elem_key, float(value_i), elem_norm_config, low_i, high_i)
+                                else:
+                                    normalized[i] = self._static_normalize_observation(
+                                        elem_key, float(value_i), elem_norm_config, low_i, high_i)
+                            processed_obs[key] = normalized.reshape(raw_array.shape)
                         elif ("observation_standardize" in config
                               and config["observation_standardize"]["active"]):
                             # Standardize element-wise (e.g. ema_zscore mode).

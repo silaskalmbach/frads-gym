@@ -78,7 +78,21 @@ class ActiveHoursWrapper(gym.Wrapper):
         ff_action = (self._inactive_action_arr
                      if self._inactive_action_arr is not None
                      else self._default_action)
-        while not self._is_active(info):
+
+        # The base env mutates its info dict in place and does NOT refresh the
+        # raw_next_* gating keys on reset, so ``info`` here can still hold the
+        # PREVIOUS episode's last-step values (e.g. daytime irradiance after a
+        # mid-day truncation). Trusting that stale snapshot for the first
+        # activeness check would wrongly classify the new episode's midnight
+        # start as active and let the agent act at night. When gating is
+        # enabled we therefore ignore the reset snapshot and take one real step
+        # first to obtain fresh next-step data, then fast-forward through any
+        # inactive lead-in. Episodes start at midnight (inactive), so this
+        # reproduces the intended "skip the initial night" behaviour. With no
+        # gating enabled there is no fast-forward at all -> leave info untouched.
+        force_first = self.check_solar or self.check_occupancy
+        while force_first or not self._is_active(info):
+            force_first = False
             info["agent_active"] = False
             obs, _reward, terminated, truncated, info = self.env.step(ff_action)
             if terminated or truncated:

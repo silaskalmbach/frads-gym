@@ -254,7 +254,6 @@ class FradsSimulation:
         # Declares one OtherEquipment object per entry; the per-window RC models
         # and the per-timestep injection are handled in the controller callback.
         self.cfs_thermal_models = {}   # window key -> CFSThermalModel (state persists across steps)
-        self._cfs_pending_gain = {}    # OtherEquipment name -> watts (set each timestep)
         for entry in model_setup.get("cfs_thermal_systems", []):
             self.epmodel.add_other_equipment(
                 name=entry["equipment_name"],
@@ -477,6 +476,30 @@ class FradsSimulation:
                       "exiting this env subprocess so a fresh process can replace "
                       "it (prevents zombie-thread leak + in-process solar-init "
                       "deadlock — see frads_wrapper reset()).", flush=True)
+
+                # Best-effort: persist the obs-normalizer EMA state before we
+                # hard-exit. os._exit bypasses all interpreter cleanup
+                # (atexit / finalizers), so without this the running EMA/
+                # min-max tracker state accumulated this episode is lost and
+                # the replacement process cold-starts the normalizer. The gym
+                # env registers `self._normalizer_save_hook` (a zero-arg
+                # callable wrapping save_normalizer_state); it is optional, so
+                # a missing hook is a silent no-op. The save runs in a daemon
+                # thread with a bounded join so a wedged pickle can never trade
+                # this exit for another hang ("kein unbegrenztes Warten").
+                hook = getattr(self, "_normalizer_save_hook", None)
+                if callable(hook):
+                    try:
+                        saver = threading.Thread(target=hook, daemon=True)
+                        saver.start()
+                        saver.join(timeout=10)
+                        if saver.is_alive():
+                            print("Warning: normalizer save hook did not finish "
+                                  "within 10s; exiting without it.", flush=True)
+                    except Exception as e:
+                        print(f"Warning: normalizer save hook failed before "
+                              f"exit: {e}", flush=True)
+
                 sys.stdout.flush()
                 sys.stderr.flush()
                 os._exit(1)
@@ -486,6 +509,24 @@ class FradsSimulation:
         self.next_step_event.clear()
         self.simulation_finished = False
         self._drain_queues()
+
+        # Reset persistent controller state that must NOT survive an episode
+        # boundary. A full reset() starts a fresh EnergyPlus run (new episode,
+        # possibly a different weather year / start month under staggered_start),
+        # so any state carried over from the previous episode corrupts the first
+        # hours of the new one and breaks episode determinism:
+        #   * cfs_thermal_models — RC pane temperatures. Clearing forces the
+        #     controller to rebuild each model with init_temp_c=zone-air-temp
+        #     of the NEW episode instead of inheriting the old episode's end
+        #     temperatures (repro: ~20 K summer->winter carryover = ~400 Wh of
+        #     spurious OtherEquipment injection over the first ~3 h).
+        #   * _hvac_accumulator / _hvac_substep_time_accum — a forced teardown
+        #     mid zone-timestep can leave partial sub-step sums and a non-zero
+        #     timer; stale residue would mis-fire the zone-boundary detection
+        #     in the next episode.
+        self.cfs_thermal_models = {}
+        self._hvac_accumulator = {}
+        self._hvac_substep_time_accum = 0.0
 
         # Select the appropriate weather file
         if hasattr(self, 'weather_files_path') and self.weather_files_path and len(self.weather_files_path) > 0:
@@ -964,39 +1005,51 @@ def controller(state):
             continue
         total_gain_w = 0.0
         pane_temps = None
+        # Defense-in-depth: model construction (from_glazing_system) and
+        # model.step run inside the exception-swallowing ctypes callback. An
+        # uncaught raise here would skip the queue put and wedge the step into
+        # a 600 s timeout. Guard per window: on failure, skip this window's
+        # delayed gain for the step (warn once) and keep the callback alive.
         for win, area in ct["windows"].items():
-            cfs_name = simulation.epsetup.get_cfs_state(win)
-            gs_name = ct.get("state_to_gs", {}).get(cfs_name, cfs_name)
-            gs = simulation.glazing_systems.get(gs_name)
-            if gs is None:
-                continue
-            model = simulation.cfs_thermal_models.get(win)
-            if model is None:
-                model = CFSThermalModel.from_glazing_system(
-                    gs,
-                    overrides={int(k): v for k, v in ct.get("pane_overrides", {}).items()},
-                    h_out=ct.get("h_out", 23.0),
-                    h_in=ct.get("h_in", 8.0),
-                    gap_nu=ct.get("gap_nu", 1.0),
-                    absorptance_mode=ct.get("absorptance_mode", "hemispherical"),
-                    init_temp_c=float(t_in),
-                )
-                model._gs_name = gs_name
-                simulation.cfs_thermal_models[win] = model
-            elif getattr(model, "_gs_name", None) != gs_name:
-                model.set_absorptance(gs.solar_front_absorptance)  # tint switched; keep T
-                model._gs_name = gs_name
-            incident = simulation.epsetup.get_variable_value(
-                "Surface Outside Face Incident Solar Radiation Rate per Area", win)
             try:
-                h_in = simulation.epsetup.get_variable_value(
-                    "Surface Inside Face Convection Heat Transfer Coefficient", win)
-            except Exception:
-                h_in = ct.get("h_in", 8.0)
-            res = model.step(float(incident), float(t_out), float(t_in), dt_s, h_in=float(h_in))
-            total_gain_w += res.lag_correction_wm2 * float(area)
-            pane_temps = res.pane_temps_c
-        simulation._cfs_pending_gain[ct["equipment_name"]] = total_gain_w
+                cfs_name = simulation.epsetup.get_cfs_state(win)
+                gs_name = ct.get("state_to_gs", {}).get(cfs_name, cfs_name)
+                gs = simulation.glazing_systems.get(gs_name)
+                if gs is None:
+                    continue
+                model = simulation.cfs_thermal_models.get(win)
+                if model is None:
+                    model = CFSThermalModel.from_glazing_system(
+                        gs,
+                        overrides={int(k): v for k, v in ct.get("pane_overrides", {}).items()},
+                        h_out=ct.get("h_out", 23.0),
+                        h_in=ct.get("h_in", 8.0),
+                        gap_nu=ct.get("gap_nu", 1.0),
+                        absorptance_mode=ct.get("absorptance_mode", "hemispherical"),
+                        init_temp_c=float(t_in),
+                    )
+                    model._gs_name = gs_name
+                    simulation.cfs_thermal_models[win] = model
+                elif getattr(model, "_gs_name", None) != gs_name:
+                    model.set_absorptance(gs.solar_front_absorptance)  # tint switched; keep T
+                    model._gs_name = gs_name
+                incident = simulation.epsetup.get_variable_value(
+                    "Surface Outside Face Incident Solar Radiation Rate per Area", win)
+                try:
+                    h_in = simulation.epsetup.get_variable_value(
+                        "Surface Inside Face Convection Heat Transfer Coefficient", win)
+                except Exception:
+                    h_in = ct.get("h_in", 8.0)
+                res = model.step(float(incident), float(t_out), float(t_in), dt_s, h_in=float(h_in))
+                total_gain_w += res.lag_correction_wm2 * float(area)
+                pane_temps = res.pane_temps_c
+            except Exception as exc:
+                if not getattr(simulation, "_cfs_step_warned", False):
+                    print(f"[controller] cfs_thermal {var_id}: window {win} step "
+                          f"failed: {exc}; skipping its delayed gain this step.",
+                          flush=True)
+                    simulation._cfs_step_warned = True
+                continue
         obs_data[var_id] = total_gain_w
         if pane_temps is not None and var_info.get("log_pane_temps"):
             for k, t in enumerate(pane_temps):
@@ -1026,25 +1079,48 @@ def controller(state):
 
             # Use custom sensor if sensor_position/sensor_direction were configured,
             # otherwise fall back to default WPI grid via calculate_wpi.
-            if "sensor_position" in illum_cfg and "sensor_direction" in illum_cfg:
-                # Custom sensor was registered under var_id by apply_custom_radiance_config
-                date_time = simulation.epsetup.get_datetime()
-                dni = simulation.epsetup.get_direct_normal_irradiance()
-                dhi = simulation.epsetup.get_diffuse_horizontal_irradiance()
-                wf = simulation.epsetup.rworkflows[zone]
-                if os.environ.get("FRADS_SENSOR_DEBUG"):
-                    print(f"[CALLER_CALC_SENSOR] var_id={var_id} workflow_type={type(wf).__name__} method_qualname={wf.calculate_sensor.__qualname__}", flush=True)
-                wpi_result = wf.calculate_sensor(
-                    var_id, cfs_dict, date_time, dni, dhi
-                )
-            else:
-                wpi_result = simulation.epsetup.calculate_wpi(zone=zone, cfs_name=cfs_dict)
+            #
+            # Defense-in-depth (mirrors the calculate_dgp block below): the
+            # ctypes callback SILENTLY swallows Python exceptions. calculate_sensor
+            # (5PM/aBSDF/hybrid Radiance) and calculate_wpi are the most failure-
+            # prone calls in this callback (missing/stale matrices, rtrace/
+            # evalglare crashes, shape mismatches). An uncaught raise here skips
+            # the obs_data_queue.put at the end of controller(), so the main
+            # thread blocks the full 600 s step timeout and the env restarts —
+            # with no visible cause and no abort criterion (2026-07 audit). Wrap,
+            # log the traceback so the silent swallow is no longer silent, emit a
+            # sentinel, and count consecutive failures so a persistently broken
+            # sensor path fails the trial fast instead of looping (see the
+            # consecutive-error escalation before the queue put below).
+            try:
+                if "sensor_position" in illum_cfg and "sensor_direction" in illum_cfg:
+                    # Custom sensor was registered under var_id by apply_custom_radiance_config
+                    date_time = simulation.epsetup.get_datetime()
+                    dni = simulation.epsetup.get_direct_normal_irradiance()
+                    dhi = simulation.epsetup.get_diffuse_horizontal_irradiance()
+                    wf = simulation.epsetup.rworkflows[zone]
+                    if os.environ.get("FRADS_SENSOR_DEBUG") == "1":
+                        print(f"[CALLER_CALC_SENSOR] var_id={var_id} workflow_type={type(wf).__name__} method_qualname={wf.calculate_sensor.__qualname__}", flush=True)
+                    wpi_result = wf.calculate_sensor(
+                        var_id, cfs_dict, date_time, dni, dhi
+                    )
+                else:
+                    wpi_result = simulation.epsetup.calculate_wpi(zone=zone, cfs_name=cfs_dict)
 
-            # Apply post-processing if specified
-            if "post_processing" in var_info and var_info["post_processing"] == "mean":
-                obs_data[var_id] = wpi_result.mean()
-            else:
-                obs_data[var_id] = wpi_result
+                # Apply post-processing if specified
+                if "post_processing" in var_info and var_info["post_processing"] == "mean":
+                    obs_data[var_id] = wpi_result.mean()
+                else:
+                    obs_data[var_id] = wpi_result
+                simulation._consec_sensor_errors = 0
+            except Exception as exc:
+                import traceback
+                print(f"[WPI_ERROR] var_id={var_id} zone={zone} exc={exc!r}", flush=True)
+                traceback.print_exc()
+                obs_data[var_id] = -1.0
+                simulation._consec_sensor_errors = (
+                    getattr(simulation, "_consec_sensor_errors", 0) + 1
+                )
 
     # 3.5. Apply per-sensor origin-constrained calibration to illuminance.
     # real_estimate = k * sim_raw  (intercept fixed at 0). k is per-sensor
@@ -1126,23 +1202,28 @@ def controller(state):
         for window in cfs_names:
             cfs_dict[window] = simulation.epsetup.get_cfs_state(window)
 
+        _sensor_debug = os.environ.get("FRADS_SENSOR_DEBUG") == "1"
         try:
             if "calculate_dgp" in var_info:
-                print(f"[DGP_ROUTE] var_id={var_id} path=calculate_dgp ev_sensor={cfg.get('ev_sensor')}", flush=True)
+                if _sensor_debug:
+                    print(f"[DGP_ROUTE] var_id={var_id} path=calculate_dgp ev_sensor={cfg.get('ev_sensor')}", flush=True)
                 obs_data[var_id] = simulation.epsetup.calculate_dgp(
                     zone=zone,
                     cfs_name=cfs_dict,
                     ev_sensor=cfg.get("ev_sensor"),
                     save_hdr=cfg.get("save_hdr"),
                 )
-                print(f"[DGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
+                if _sensor_debug:
+                    print(f"[DGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
             else:
-                print(f"[DGP_ROUTE] var_id={var_id} path=calculate_edgps (NO ev_sensor passed)", flush=True)
+                if _sensor_debug:
+                    print(f"[DGP_ROUTE] var_id={var_id} path=calculate_edgps (NO ev_sensor passed)", flush=True)
                 obs_data[var_id] = simulation.epsetup.calculate_edgps(
                     zone=zone,
                     cfs_name=cfs_dict,
                 )
-                print(f"[EDGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
+                if _sensor_debug:
+                    print(f"[EDGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
         except Exception as exc:
             import traceback
             label = "DGP" if "calculate_dgp" in var_info else "EDGP"
@@ -1266,6 +1347,21 @@ def controller(state):
                 else:
                     print(f"Warning: Key '{key}' not found in observation data for energy sum '{var_id}'. Assuming 0.")
             obs_data[var_id] = total_energy
+
+    ###################################
+    # Abort criterion for a persistently broken sensor path. Phase 3 emits a
+    # -1.0 sentinel (instead of hanging) on each calculate_sensor/calculate_wpi
+    # failure and counts consecutive failures. If the sensor never recovers we
+    # would otherwise feed -1.0 into training indefinitely; past a threshold,
+    # surface an explicit error obs so the env's bounded restart logic
+    # (frads_gym.reset(): max 2 restarts, then fail) ends the trial fast with a
+    # logged cause instead of a silent garbage-fed run.
+    _MAX_CONSEC_SENSOR_ERRORS = 10
+    if getattr(simulation, "_consec_sensor_errors", 0) >= _MAX_CONSEC_SENSOR_ERRORS:
+        print(f"[SENSOR_FATAL] calculate_sensor/calculate_wpi failed "
+              f"{simulation._consec_sensor_errors} consecutive zone timesteps; "
+              f"signalling error to abort the restart loop.", flush=True)
+        obs_data = {'error': 'calculate_sensor failed repeatedly'}
 
     ###################################
     # Put data into the queue for external controller.

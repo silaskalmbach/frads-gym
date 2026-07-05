@@ -51,14 +51,11 @@ def _parse_epw_ghi(epw_path: str) -> Dict[Tuple[int, int, int, int], float]:
             hour = int(parts[3])
             minute = int(parts[4]) if len(parts) > 4 else 0
 
-            # EPW uses hour 1-24 convention (hour 24 = midnight of next day)
-            # Convert to 0-23 for lookup
-            if hour == 24:
-                hour = 0
-            else:
-                # EPW hour 1 = 00:00-01:00, represents the PRECEDING hour
-                # For forecast purposes, shift: EPW hour H → H-1
-                hour = hour - 1 if hour > 0 else 23
+            # EPW uses hour 1-24 convention; hour H covers the interval
+            # (H-1):00–H:00.  Map uniformly to the 0-23 start-of-interval hour:
+            # H → H-1 (so h1 → 0 … h24 → 23).  Mapping h24 → 0 would double-write
+            # hour 0 (overwriting h1) and leave hour 23 empty.
+            hour = hour - 1 if hour > 0 else 23
 
             ghi = float(parts[13])  # Global Horizontal Radiation [Wh/m²]
             # Wh/m² for 1h interval ≈ W/m² average over that hour
@@ -110,6 +107,21 @@ class SolarForecastWrapper(gym.Wrapper):
             )
             self.observation_space = gym.spaces.Dict(new_spaces)
 
+    def _sync_timestep_minutes(self, info: Dict) -> None:
+        """Derive the timestep length from the env's actual timestep count.
+
+        FradsEnv exposes ``number_of_timesteps_per_hour`` in info; using it keeps
+        the forecast horizon in wall-clock terms correct (e.g. FTG 12/h = 5 min,
+        not the 15-min default).  Falls back to 15 min if absent/invalid.
+        """
+        n = info.get("number_of_timesteps_per_hour")
+        try:
+            n = int(n)
+            if n > 0:
+                self._timestep_minutes = 60 / n
+        except (TypeError, ValueError):
+            pass
+
     def _load_epw(self) -> None:
         """Load EPW file from explicit path or from the unwrapped env."""
         epw = self._epw_path
@@ -119,9 +131,14 @@ class SolarForecastWrapper(gym.Wrapper):
             if hasattr(base_env, "simulation"):
                 sim = base_env.simulation
                 if hasattr(sim, "weather_files_path") and sim.weather_files_path:
-                    idx = getattr(sim, "current_weather_idx", 0)
-                    # current_weather_idx may have been incremented after reset
-                    idx = max(0, idx - 1) if idx > 0 else 0
+                    # ``current_weather_idx`` is advanced modulo len AFTER the
+                    # active file is chosen (frads_wrapper.py:590-591); on wrap
+                    # (active = last file, current = 0) ``idx-1`` would give 0
+                    # instead of len-1.  ``_active_weather_idx`` is the exact
+                    # index of the file the current episode is running.
+                    idx = getattr(sim, "_active_weather_idx", None)
+                    if idx is None:
+                        idx = max(0, getattr(sim, "current_weather_idx", 0) - 1)
                     epw = sim.weather_files_path[idx]
         if epw is not None:
             self._ghi_lookup = _parse_epw_ghi(epw)
@@ -141,6 +158,7 @@ class SolarForecastWrapper(gym.Wrapper):
     def reset(self, **kwargs) -> Tuple[Any, Dict]:
         obs, info = self.env.reset(**kwargs)
         self._load_epw()
+        self._sync_timestep_minutes(info)
 
         # Add zero forecast at reset (no datetime available yet)
         forecast = np.zeros(self._forecast_horizon, dtype=np.float32)
@@ -152,6 +170,7 @@ class SolarForecastWrapper(gym.Wrapper):
 
     def step(self, action) -> Tuple[Any, float, bool, bool, Dict]:
         obs, reward, terminated, truncated, info = self.env.step(action)
+        self._sync_timestep_minutes(info)
 
         # Get forecast from datetime in info
         dt = info.get("raw_next_datetime", None)
