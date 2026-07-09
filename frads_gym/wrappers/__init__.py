@@ -1,3 +1,4 @@
 from frads_gym.wrappers.solar_forecast import SolarForecastWrapper
 from frads_gym.wrappers.temporal_history import TemporalHistoryWrapper
 from frads_gym.wrappers.active_hours import ActiveHoursWrapper
+from frads_gym.wrappers.action_repeat import ActionRepeatWrapper
