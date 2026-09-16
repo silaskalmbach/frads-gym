@@ -78,10 +78,20 @@ See the `examples/data/` directory for example configurations.
 
 ## Dependencies
 
-- [frads](https://github.com/LBNL-ETA/frads) - Framework for Radiance Simulation
-- [gymnasium](https://gymnasium.farama.org/) - RL Environment API
-- [EnergyPlus](https://energyplus.net/) - Building Energy Simulation
-- [Radiance](https://www.radiance-online.org/) - Lighting Simulation
+`pip install -e .` resolves everything below. **No engine has to be installed by hand** —
+the EnergyPlus and Radiance binaries ship as PyPI wheels.
+
+Declared in `pyproject.toml`:
+
+- [`gymnasium`](https://gymnasium.farama.org/) `>=1.0.0` - RL environment API
+- `pandas` `>=2.0.0`
+- `pyenergyplus-lbnl` `>=25.2.0` - the [EnergyPlus](https://energyplus.net/) runtime + Python API, packaged by LBNL
+- [`frads`](https://github.com/LBNL-ETA/frads) `>=2.0.0` - Framework for Radiance Simulation
+
+Pulled in transitively by `frads`:
+
+- `pyradiance` - the [Radiance](https://www.radiance-online.org/) binaries
+- `numpy`, `scipy`, `pywincalc`
 
 ## License
 
