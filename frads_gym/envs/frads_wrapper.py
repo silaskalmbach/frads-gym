@@ -37,6 +37,31 @@ _subroutines_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspat
 if _subroutines_path not in sys.path:
     sys.path.append(_subroutines_path)
 from radiance_utils import apply_custom_radiance_config
+import hashlib
+import numpy as np
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sensor_digest(wf):
+    """Pruefsumme der Sensoren eines Radiance-Workflows fuer feste Matrizen.
+
+    ponytail: Positionen auf 0,1 mm gerundet (+0.0 gegen -0.0), damit Linux und Windows denselben
+    Wert liefern; Aenderungen am Radiance-Modell ausser Sensoren und Gebaeudemodell (z. B. andere
+    CFS-Fenstergruppen in der Config) erkennt die Pruefung nicht.
+    """
+    sensors = {
+        name: (np.round(np.asarray(cfg.data, dtype=float), 4) + 0.0).tolist() if cfg.data
+        else Path(cfg.file).read_text()
+        for name, cfg in sorted(wf.config.model.sensors.items())
+    }
+    return hashlib.sha256(json.dumps(sensors, sort_keys=True).encode()).hexdigest()
 
 # settings = fr.Settings()
 # settings.num_processors = 4
@@ -189,6 +214,7 @@ class FradsSimulation:
         # Try to get model path or type
         model_path = model_setup.get("model_path")
         model_type = model_setup.get("model_type")
+        self.model_file = None  # geladene Modelldatei, Schluessel fuer feste Matrizen
         
         # Load model based on available configuration
         if model_path:
@@ -203,6 +229,7 @@ class FradsSimulation:
             if os.path.exists(full_model_path):
                 print(f"Loading model from path: {full_model_path}")
                 self.epmodel = fr.load_energyplus_model(full_model_path)
+                self.model_file = full_model_path
             else:
                 print(f"Warning: Model path not found: {full_model_path}")
                 if model_type and model_type in ref_models:
@@ -413,6 +440,38 @@ class FradsSimulation:
         """
         apply_custom_radiance_config(self.epsetup, self.epsetup_config)
 
+    def _use_fixed_matrices(self, root):
+        """Feste Radiance-Matrizen (Config-Schluessel fixed_matrices oder FRADS_MATRIX_DIR, seit 22.10.2026).
+
+        frads tastet die Sensor-Fenster-Matrizen zufaellig ab; ohne festen Satz zieht jeder Lauf
+        (die Zone mit eigenem Sensor sogar jeder Reset) eine eigene Realisierung, am Blendungspunkt
+        etwa +-3 % E_v. Hier liest jede Zone <root>/<IDF-Name>/<Zone>.npz eines einmal erzeugten
+        Satzes und prueft ihn gegen manifest.json (Gebaeudemodell, Sensoren, Dateien).
+        FRADS_MATRIX_WRITE=1 erzeugt den Satz statt ihn zu lesen (rl/evaluation/make_fixed_matrices.py).
+        """
+        if not self.model_file:
+            raise RuntimeError("FRADS_MATRIX_DIR braucht model_setup.model_path (kein Fallback-Modell)")
+        set_dir = Path(root) / Path(self.model_file).stem
+        write = os.environ.get("FRADS_MATRIX_WRITE") == "1"
+        # vor dem Erzeugen/Laden gebildet, beim Schreiben fuer das Manifest aufbewahrt
+        self.fixed_matrix_digests = {z: sensor_digest(wf) for z, wf in self.epsetup.rworkflows.items()}
+        if write:
+            set_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            manifest = json.loads((set_dir / "manifest.json").read_text())
+            if manifest["model_sha256"] != file_sha256(self.model_file):
+                raise RuntimeError(f"{set_dir}: Gebaeudemodell geaendert, festen Satz neu erzeugen")
+        for zone, wf in self.epsetup.rworkflows.items():
+            wf.mfile = set_dir / f"{zone}.npz"
+            wf.config.settings.overwrite = write
+            if write:
+                continue
+            entry = manifest["zones"][zone]
+            if entry["sensors_sha256"] != self.fixed_matrix_digests[zone]:
+                raise RuntimeError(f"{set_dir}: Sensoren von {zone} passen nicht zum festen Satz")
+            if entry["npz_sha256"] != file_sha256(wf.mfile):
+                raise RuntimeError(f"{wf.mfile}: Pruefsumme stimmt nicht mit manifest.json")
+
     def _register_controller(self):
         """
         Register the controller with EnergyPlus without triggering AST analysis errors.
@@ -610,6 +669,9 @@ class FradsSimulation:
         # Apply custom sensor/view positions from config, then initialize Radiance
         if self.enable_radiance:
             self._apply_custom_radiance_config()
+            fixed = os.environ.get("FRADS_MATRIX_DIR") or self.epsetup_config.get("fixed_matrices")
+            if fixed:
+                self._use_fixed_matrices(os.path.join(self.input_dir, fixed))
             # The 5PM-image glare path (FivePhaseMethod.calculate_dgp)
             # requires the view matrices (V, Vd, Cds, Cdf) which
             # initialize_radiance skips by default. Promote when any
