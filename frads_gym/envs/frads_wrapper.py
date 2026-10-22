@@ -441,7 +441,7 @@ class FradsSimulation:
         apply_custom_radiance_config(self.epsetup, self.epsetup_config)
 
     def _use_fixed_matrices(self, root):
-        """Feste Radiance-Matrizen (Config-Schluessel fixed_matrices oder FRADS_MATRIX_DIR, seit 22.10.2026).
+        """Feste Radiance-Matrizen (Config model_setup.fixed_matrices oder FRADS_MATRIX_DIR, seit 22.10.2026).
 
         frads tastet die Sensor-Fenster-Matrizen zufaellig ab; ohne festen Satz zieht jeder Lauf
         (die Zone mit eigenem Sensor sogar jeder Reset) eine eigene Realisierung, am Blendungspunkt
@@ -669,7 +669,7 @@ class FradsSimulation:
         # Apply custom sensor/view positions from config, then initialize Radiance
         if self.enable_radiance:
             self._apply_custom_radiance_config()
-            fixed = os.environ.get("FRADS_MATRIX_DIR") or self.epsetup_config.get("fixed_matrices")
+            fixed = os.environ.get("FRADS_MATRIX_DIR") or self.epsetup_config.get("model_setup", {}).get("fixed_matrices")
             if fixed:
                 self._use_fixed_matrices(os.path.join(self.input_dir, fixed))
             # The 5PM-image glare path (FivePhaseMethod.calculate_dgp)
