@@ -71,7 +71,7 @@ class FradsSimulation:
     - Communicating with external controllers
     - Managing simulation state and resources
     """
-    def __init__(self, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, enable_radiance=True, staggered_start: bool = False, env_id: int = 0, n_envs: int = 1):
+    def __init__(self, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, enable_radiance=True, staggered_start: bool = False, env_id: int = 0, n_envs: int = 1, weekday_from_ep: bool = False):
         """
         Initialize the EnergyPlus simulation.
         
@@ -102,6 +102,7 @@ class FradsSimulation:
         self.run_periods=run_periods  # List of dicts parallel to weather_files_path
         self.current_weather_idx = 0
         self.staggered_start = staggered_start
+        self.weekday_from_ep = weekday_from_ep  # Wochentag aus EnergyPlus in die Beobachtung
         self.env_id = env_id
         self.n_envs = n_envs
         self.reset_count = 0
@@ -557,7 +558,7 @@ class FradsSimulation:
                     new_end_month = ((new_begin_month - 2) % 12) + 1  # end month is month before begin month
                     
                     # Calculate year boundaries
-                    orig_begin_year = int(base_run_period.get("begin_year", 2000))
+                    orig_begin_year = int(base_run_period.get("begin_year", 2002))
                     
                     # Start year is the base year
                     new_begin_year = orig_begin_year
@@ -928,6 +929,10 @@ def controller(state):
     ###################################
     # Initialize observation data with datetime
     obs_data = {'datetime': simulation.epsetup.get_datetime()}
+    # Wochentag nach dem Kalender der RunPeriod (1=Sonntag ... 7=Samstag), nach dem
+    # EnergyPlus die Belegung plant; das Datum oben traegt das Quelljahr der Wetterdatei.
+    if simulation.weekday_from_ep:
+        obs_data['day_of_week'] = simulation.epsetup.api.exchange.day_of_week(simulation.epsetup.state)
 
     # 1. First process all get_variable_value entries
     #    HVAC-substep variables use the accumulator (full zone-TS total);

@@ -28,7 +28,7 @@ class FradsEnv(gym.Env):
     """
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_dir=None):
+    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_dir=None, weekday_from_ep=False):
         """
         Initialize the FRADS gymnasium environment
 
@@ -45,6 +45,10 @@ class FradsEnv(gym.Env):
         self.reward_function = reward_function
         self.truncated_flag = False
         self.truncate_on = truncate_on
+        # True: Wochentag der Beobachtung aus EnergyPlus (Kalender der RunPeriod, nach dem die
+        # Belegung laeuft) statt aus dem Datum, das das Quelljahr der Wetterdatei traegt.
+        # Default False haelt alte Modelle und das FTG (Live-Server liest die echte Uhr) unveraendert.
+        self.weekday_from_ep = weekday_from_ep
         # Stash for get_city_id's fallback path when self.simulation.weather_files_path is unset.
         self._weather_files_path = weather_files_path
 
@@ -99,7 +103,7 @@ class FradsEnv(gym.Env):
             self.info[f'calibration_{_var_id}_k'] = _k
 
         # Initialize the EnergyPlus simulation
-        self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, run_periods=run_periods, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance, staggered_start=staggered_start, env_id=env_id, n_envs=n_envs)
+        self.simulation = FradsSimulation(output_dir=output_dir, config_file=sim_config_arg, run_annual=run_annual, cleanup=cleanup, run_period=run_period, treat_weather_as_actual=treat_weather_as_actual, weather_files_path=weather_files_path, run_periods=run_periods, number_of_timesteps_per_hour=number_of_timesteps_per_hour, enable_radiance=enable_radiance, staggered_start=staggered_start, env_id=env_id, n_envs=n_envs, weekday_from_ep=weekday_from_ep)
         
         self.create_spaces_from_config()
         print(f"Observation space: {self.observation_space}")
@@ -640,7 +644,10 @@ class FradsEnv(gym.Env):
 
                 # Process day of week (7 days = 2π)
                 # Monday=0, Sunday=6
-                day_of_week = raw_obs['datetime'].weekday()
+                if self.weekday_from_ep:
+                    day_of_week = (int(raw_obs['day_of_week']) - 2) % 7  # EnergyPlus: 1=Sonntag
+                else:
+                    day_of_week = raw_obs['datetime'].weekday()
                 dow_rad = (day_of_week / 7.0) * 2 * np.pi
                 dow_sin = np.sin(dow_rad)
                 dow_cos = np.cos(dow_rad)
