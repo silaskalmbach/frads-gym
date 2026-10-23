@@ -28,7 +28,7 @@ class FradsEnv(gym.Env):
     """
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_dir=None, weekday_from_ep=False):
+    def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_dir=None, weekday_from_ep=False, sync_first_action=False, truncate_month_only=False):
         """
         Initialize the FRADS gymnasium environment
 
@@ -49,6 +49,13 @@ class FradsEnv(gym.Env):
         # Belegung laeuft) statt aus dem Datum, das das Quelljahr der Wetterdatei traegt.
         # Default False haelt alte Modelle und das FTG (Live-Server liest die echte Uhr) unveraendert.
         self.weekday_from_ep = weekday_from_ep
+        # True (seit 23.10.2026): reset() gibt den Controller nicht ohne Aktion frei. Sonst rechnet
+        # EnergyPlus dauerhaft einen Zeitschritt voraus und step(a) liefert eine Beobachtung, die vor a
+        # entstand (Aktion wirkt erst einen Schritt spaeter, Befund B 23.09.). Default False = Altstand (FTG).
+        self.sync_first_action = sync_first_action
+        # True (seit 23.10.2026): Trunkierung nur beim Monatswechsel. Das Datum traegt das Quelljahr der
+        # Wetterdatei, der Jahreswechsel am Monatsanfang loeste sonst eine zweite 1-Schritt-Episode aus.
+        self.truncate_month_only = truncate_month_only
         # Stash for get_city_id's fallback path when self.simulation.weather_files_path is unset.
         self._weather_files_path = weather_files_path
 
@@ -355,7 +362,12 @@ class FradsEnv(gym.Env):
         # a bounded number of full restarts instead of silently continuing on a
         # key-less {'error'} obs (2026-06-06 hardening — this path was previously
         # unguarded; the step() path already truncates on the same error).
-        self.raw_next_obs = self.simulation.steps()
+        # sync_first_action: die erste Beobachtung holen, ohne den Controller freizugeben. Nach einer
+        # Trunkierung laeuft EnergyPlus weiter und wartet schon auf die naechste Aktion; die Beobachtung,
+        # die die alte Episode beendet hat, ist dann die erste der neuen (kein Leerschritt ohne Aktion).
+        release = not self.sync_first_action
+        if not (was_truncated and self.sync_first_action):
+            self.raw_next_obs = self.simulation.steps(release=release)
         _reset_restart_tries = 0
         while (isinstance(self.raw_next_obs, dict)
                and 'error' in self.raw_next_obs
@@ -364,7 +376,7 @@ class FradsEnv(gym.Env):
             print(f"WARNING: obs-timeout during reset() init "
                   f"(restart {_reset_restart_tries}/2) -> full EnergyPlus restart")
             self.simulation.reset()
-            self.raw_next_obs = self.simulation.steps()
+            self.raw_next_obs = self.simulation.steps(release=release)
 
         # Process observation
         self.observation = self._process_observation(self.raw_next_obs)
@@ -396,7 +408,8 @@ class FradsEnv(gym.Env):
         # 0 would make the R1+ oracle lookup (info['raw_next_step_idx']) read
         # January rows for every post-truncation month.
         if was_truncated:
-            self._step_idx = getattr(self, '_step_idx', 0) + 1
+            # Mit sync_first_action rechnet reset() keinen Schritt voraus, der Index bleibt stehen.
+            self._step_idx = getattr(self, '_step_idx', 0) + (0 if self.sync_first_action else 1)
         else:
             self._step_idx = 0
 
@@ -1549,8 +1562,8 @@ class FradsEnv(gym.Env):
         
         # Check for month change
         elif truncate_on.lower() == "month":
-            if (current_datetime.month != previous_datetime.month or 
-                current_datetime.year != previous_datetime.year):
+            if (current_datetime.month != previous_datetime.month or
+                (not self.truncate_month_only and current_datetime.year != previous_datetime.year)):
                 return True
         
         return False

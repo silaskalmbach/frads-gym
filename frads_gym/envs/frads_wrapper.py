@@ -725,7 +725,7 @@ class FradsSimulation:
             except queue.Full:
                 pass
             
-    def steps(self, action_data=None):
+    def steps(self, action_data=None, release=True):
         """
         Interface for external control of the simulation.
 
@@ -751,8 +751,10 @@ class FradsSimulation:
             if action_data:
                 self.action_data_queue.put(action_data, timeout=600)
 
-            # Signal controller to continue
-            self.next_step_event.set()
+            # Signal controller to continue. release=False holt nur die naechste Beobachtung, ohne den
+            # Controller freizugeben (erste Beobachtung nach dem EnergyPlus-Start, sync_first_action).
+            if release:
+                self.next_step_event.set()
 
             # Wait for data from controller. 600s (was 120s, then 300s): under
             # multi-env contention the one-time EnergyPlus solar/shadowing init
