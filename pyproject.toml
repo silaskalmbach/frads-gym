@@ -6,26 +6,31 @@ build-backend = "hatchling.build"
 packages = ["frads_gym"]
 
 [tool.hatch.build.targets.sdist]
-include = ["frads_gym", "tests", "examples", "README.md", "LICENSE", "CHANGELOG.md", "CITATION.cff",
-           "requirements-5pm.txt"]
+include = ["frads_gym", "tests", "examples", "docs", "mkdocs.yml", "README.md", "LICENSE", "CHANGELOG.md",
+           "CITATION.cff", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "requirements-5pm.txt"]
 
 [project]
 name = "frads-gym"
-version = "0.1.1"
-description = "A Gymnasium environment for building facade control with frads (framework for radiance simulation)"
+version = "0.2.0"
+description = "Gymnasium environment for facade control with EnergyPlus and Radiance (via frads)"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 authors = [
     {name = "Silas Kalmbach", email = "silas.kalmbach@gmail.com"}
 ]
-keywords = ["gymnasium", "reinforcement-learning", "building-simulation", "frads", "energyplus"]
+keywords = ["gymnasium", "reinforcement-learning", "building-simulation", "frads", "energyplus", "radiance",
+            "daylighting", "electrochromic", "facade-control"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
@@ -38,7 +43,10 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/silaskalmbach/frads-gym"
+Documentation = "https://silaskalmbach.github.io/frads-gym/"
 Repository = "https://github.com/silaskalmbach/frads-gym"
+Issues = "https://github.com/silaskalmbach/frads-gym/issues"
+Changelog = "https://github.com/silaskalmbach/frads-gym/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

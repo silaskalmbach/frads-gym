@@ -79,8 +79,9 @@ env.close()
 ```
 
 The observations in `obs` are normalised to [0, 1]; the raw values are in `info["raw_next_<key>"]`. The
-first run generates the Radiance matrices for every zone with windows, which takes about a minute on a
-multi-core machine; the output then looks like this:
+first run creates the four glazing states and the Radiance matrices for every zone with windows; on a
+32-core machine the whole script took just under two minutes, later runs reuse the glazing. The output
+looks like this:
 
 ```text
  6.00 h  state=ec60  WPI=  804.3 lx  reward=-0.609
