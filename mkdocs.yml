@@ -1,0 +1,58 @@
+site_name: frads-gym
+site_description: Gymnasium environment for facade control with EnergyPlus and Radiance
+site_url: https://silaskalmbach.github.io/frads-gym/
+repo_url: https://github.com/silaskalmbach/frads-gym
+repo_name: silaskalmbach/frads-gym
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2025–2026 Silas Kalmbach
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.sections
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/brightness-7, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/brightness-4, name: Light mode}
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quickstart: quickstart.md
+  - How it works: how-it-works.md
+  - Configuration: configuration.md
+  - Wrappers: wrappers.md
+  - Five-phase method: five-phase.md
+  - API reference: api.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            merge_init_into_class: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      check_paths: true

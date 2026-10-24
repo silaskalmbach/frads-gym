@@ -326,16 +326,16 @@ def add_other_equipment(
     runtime actuator overrides it (and may set it negative).
 
     Args:
-        epmodel: frads ``EnergyPlusModel`` to modify in place.
-        name: Unique OtherEquipment object name (used as the actuator key).
-        zone: Zone name to inject the gain into.
-        design_level: Initial power [W] (overridden at runtime).
-        fraction_radiant: Radiant fraction onto surfaces [0, 1].
-        fraction_lost: Lost fraction [0, 1] (keep 0 for energy conservation;
+        epmodel (frads.EnergyPlusModel): Model to modify in place.
+        name (str): Unique OtherEquipment object name (used as the actuator key).
+        zone (str): Zone name to inject the gain into.
+        design_level (float): Initial power [W] (overridden at runtime).
+        fraction_radiant (float): Radiant fraction onto surfaces [0, 1].
+        fraction_lost (float): Lost fraction [0, 1] (keep 0 for energy conservation;
             the remainder of 1 - radiant - lost is convective to the air).
-        schedule_name: Availability schedule (constant-on by default).
-        end_use_subcategory: End-use tracking label.
-        replace: Replace an existing object of the same name.
+        schedule_name (str): Availability schedule (constant-on by default).
+        end_use_subcategory (str): End-use tracking label.
+        replace (bool): Replace an existing object of the same name.
 
     Raises:
         ValueError: If the zone is not in the model, or the object already

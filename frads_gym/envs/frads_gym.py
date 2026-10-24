@@ -39,45 +39,45 @@ class FradsEnv(gym.Env):
         """Create the environment; the configuration and arguments are checked first.
 
         Args:
-            render_mode: ``None``, ``"raw_obs"`` (print the raw observation every step) or
+            render_mode (str | None): ``None``, ``"raw_obs"`` (print the raw observation every step) or
                 ``"raw_time"`` (print the simulation time every step).
-            output_dir: Directory for EnergyPlus output, Radiance matrices and ``environment_log.csv``.
+            output_dir (str): Directory for EnergyPlus output, Radiance matrices and ``environment_log.csv``.
                 Required. The process changes its working directory to it.
-            config_file: Path to a JSON configuration file or the configuration as a dict. Relative
+            config_file (str | dict): Path to a JSON configuration file or the configuration as a dict. Relative
                 paths in a dict resolve against its ``config_dir`` key.
-            run_annual: Simulate the whole year (January 1 to December 31) regardless of the months
+            run_annual (bool): Simulate the whole year (January 1 to December 31) regardless of the months
                 and days in ``run_period``.
-            cleanup: Remove ``eplusout``, ``Temp``, ``Octrees`` and ``Matrices`` in ``output_dir``
+            cleanup (bool): Remove ``eplusout``, ``Temp``, ``Octrees`` and ``Matrices`` in ``output_dir``
                 before starting.
-            run_period: ``{"begin_year", "begin_month", "begin_day", "end_year", "end_month",
+            run_period (dict | None): ``{"begin_year", "begin_month", "begin_day", "end_year", "end_month",
                 "end_day"}``, any subset; applied to the first RunPeriod of the model. Missing years
                 default to 2002.
-            treat_weather_as_actual: Set the RunPeriod flag "Treat Weather as Actual".
-            weather_files_path: List of EPW files. Required. Each full reset (a new EnergyPlus run)
+            treat_weather_as_actual (bool): Set the RunPeriod flag "Treat Weather as Actual".
+            weather_files_path (list[str]): List of EPW files. Required. Each full reset (a new EnergyPlus run)
                 uses the next file in turn.
-            run_periods: One run period per weather file, used instead of ``run_period``.
-            number_of_timesteps_per_hour: EnergyPlus timesteps per hour (a divisor of 60); one
+            run_periods (list[dict] | None): One run period per weather file, used instead of ``run_period``.
+            number_of_timesteps_per_hour (int): EnergyPlus timesteps per hour (a divisor of 60); one
                 ``step()`` per timestep.
-            reward_function: Callable ``(obs, action, next_obs, info) -> float``. Required. ``obs``
+            reward_function (callable): Callable ``(obs, action, next_obs, info) -> float``. Required. ``obs``
                 and ``next_obs`` are the processed observations; ``info`` holds the raw values as
                 ``raw_current_<key>`` and ``raw_next_<key>``.
-            logging: Append every step to ``environment_log.csv`` in ``output_dir``.
-            enable_radiance: Compute daylight and glare with Radiance. Without it only EnergyPlus
+            logging (bool): Append every step to ``environment_log.csv`` in ``output_dir``.
+            enable_radiance (bool): Compute daylight and glare with Radiance. Without it only EnergyPlus
                 runs; entries that need Radiance must then be inactive.
-            truncate_on: ``"none"``, ``"day"`` or ``"month"``: end an episode (``truncated=True``)
+            truncate_on (str): ``"none"``, ``"day"`` or ``"month"``: end an episode (``truncated=True``)
                 when the simulation date passes into a new day or month. EnergyPlus keeps running and
                 the next ``reset()`` continues from there.
-            staggered_start: Shift the start month of ``run_periods`` by ``env_id`` and by the number
+            staggered_start (bool): Shift the start month of ``run_periods`` by ``env_id`` and by the number
                 of resets, so parallel environments see different seasons.
-            env_id: Index of this environment among ``n_envs`` parallel ones (for staggering).
-            n_envs: Number of parallel environments.
-            normalizer_state_dir: Directory with ``normalizer_state_<city_id>.pkl`` files to restore
+            env_id (int): Index of this environment among ``n_envs`` parallel ones (for staggering).
+            n_envs (int): Number of parallel environments.
+            normalizer_state_dir (str | None): Directory with ``normalizer_state_<city_id>.pkl`` files to restore
                 the dynamic observation normalisation from an earlier run.
-            weekday_from_ep: Take the weekday of the observation from the EnergyPlus run-period
+            weekday_from_ep (bool): Take the weekday of the observation from the EnergyPlus run-period
                 calendar instead of from the weather-file date.
-            sync_first_action: ``reset()`` returns the first observation without letting EnergyPlus
+            sync_first_action (bool): ``reset()`` returns the first observation without letting EnergyPlus
                 advance, so the first action acts on the transition that observation starts.
-            truncate_month_only: With ``truncate_on="month"``, ignore year changes that are not
+            truncate_month_only (bool): With ``truncate_on="month"``, ignore year changes that are not
                 month changes.
 
         Raises:
@@ -487,18 +487,19 @@ class FradsEnv(gym.Env):
         return self.observation, self.info
     
     def step(self, action):
-        """
-        Take a step in the environment by applying control actions.
-        
+        """Apply an action for one EnergyPlus timestep and return the result.
+
         Args:
-            action: Dict containing facade_state, cooling_setpoint and lighting_power
-            
+            action (numpy.ndarray): One value per ``actuate_cfs_state`` entry, in config order; each is
+                mapped to a glazing state through ``facade_state_mapping``.
+
         Returns:
-            observation: Next environment state
-            reward: Reward for the action
-            terminated: Whether the episode has ended
-            truncated: Whether the episode was truncated (max steps)
-            info: Additional information
+            observation (dict): Processed observation after the timestep.
+            reward (float): Value of ``reward_function``.
+            terminated (bool): Always False; episodes end by truncation.
+            truncated (bool): True at the end of the run period, at a day or month boundary
+                (``truncate_on``) or after a step timeout.
+            info (dict): Raw values as ``raw_current_<key>`` and ``raw_next_<key>`` and more.
         """
         # Convert gym action to simulation action format
         sim_action = self._process_action(action)
