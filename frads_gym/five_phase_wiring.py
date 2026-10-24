@@ -1,19 +1,15 @@
-"""Optionales 5-Phase-Wiring fuer das RL-Training (gated durch FRADS_USE_FIVE_PHASE).
+"""Optional five-phase method (5PM) wiring, switched on by FRADS_USE_FIVE_PHASE=1.
 
-Spiegelt den bewaehrten Monkeypatch aus
-``rl/evaluation/run_ftg_calibration_sim.py`` (Zeile 51-115), damit der RL-Pfad
-(``main_optimize`` -> ``frads_wrapper`` / ``matrices_manager``) DENSELBEN
-5PM-Zustand nutzt wie die FTG-Kalibrierung (X22-Winning-Pipeline). Hintergrund:
-``EnergyPlusSetup`` hat Default ``radiance_method="3phase"``; die per-Sensor-k
-und k=1.45 wurden aber gegen 5PM-erzeugte Ev/WPI gefittet. Ohne dieses Wiring
-liefe das Training auf 3PM -> Methodenbruch zur Kalibrierung (2026-06-04).
-
-**Gated:** Ohne ``FRADS_USE_FIVE_PHASE`` bleibt alles beim Default 3phase
-(medium_office unberuehrt). Aktivierung (FTG, X22-konform):
+``EnergyPlusSetup`` defaults to ``radiance_method="3phase"``, and frads-gym creates it without that
+argument. With the frads fork installed (requirements-5pm.txt) these patches let environment variables
+select the five-phase method, its sun basis and the number of processes, so the same frads-gym code
+runs either method. Without ``FRADS_USE_FIVE_PHASE`` everything stays on the three-phase default.
 
     FRADS_USE_FIVE_PHASE=1 FRADS_USE_ABSDF=1 SUN_BASIS=r2 [FRADS_NPROC=16]
 
-Verifizieren via Lauf-Log ``[CALLER_CALC_SENSOR] workflow_type=FivePhaseMethod``.
+Check with ``FRADS_SENSOR_DEBUG=1``: the log shows ``[CALLER_CALC_SENSOR] workflow_type=FivePhaseMethod``.
+With upstream frads only the FRADS_NPROC patch is applied, and check_frads_capabilities() rejects the
+fork-only variables.
 """
 
 import inspect
@@ -48,10 +44,9 @@ def check_frads_capabilities(config: dict) -> None:
 
 
 def apply_five_phase_wiring() -> bool:
-    """Patcht ``frads.EnergyPlusSetup`` global, sodass ``FRADS_USE_FIVE_PHASE=1``
-    ``radiance_method='5phase'`` + ``sun_basis`` (SUN_BASIS, default 'r2') +
-    ``FRADS_NPROC`` aktiviert. Idempotent (mehrfacher Aufruf = einmal gepatcht).
-    Gibt True zurueck, wenn (neu) angewandt.
+    """Patch ``frads.EnergyPlusSetup`` globally so that ``FRADS_USE_FIVE_PHASE=1`` selects
+    ``radiance_method='5phase'`` with ``sun_basis`` (SUN_BASIS, default 'r2') and ``FRADS_NPROC``.
+    Idempotent; returns True when the patches were applied by this call.
     """
     global _APPLIED
     if _APPLIED:
@@ -60,14 +55,14 @@ def apply_five_phase_wiring() -> bool:
         import frads as _fr
         import frads.methods as _fm
     except ImportError as exc:  # pragma: no cover
-        warnings.warn(f"five_phase_wiring: frads-Import fehlgeschlagen: {exc}")
+        warnings.warn(f"five_phase_wiring: importing frads failed: {exc}")
         return False
 
     global _FORK
     _FORK = "radiance_method" in inspect.signature(_fr.EnergyPlusSetup.__init__).parameters
 
-    # frads_wrapper ruft initialize_radiance() ohne nproc -> eplus.py-Default
-    # nproc=1 (rcontrib single-thread). FRADS_NPROC honorieren.
+    # frads_wrapper calls initialize_radiance() without nproc, which would leave the matrix
+    # generation single-threaded (frads default nproc=1); use FRADS_NPROC or half the CPUs.
     _orig_init_rad = _fr.EnergyPlusSetup.initialize_radiance
 
     def _init_rad_with_env(self, zones=None, nproc=None, view_matrices=False):
@@ -84,12 +79,10 @@ def apply_five_phase_wiring() -> bool:
     if not _FORK:
         return True
 
-    # sun_basis VOR der FivePhaseMethod-Konstruktion in die Config injizieren.
-    # eplus.py baut die Workflows (FivePhaseMethod.__init__) INNERHALB von
-    # EnergyPlusSetup.__init__; FivePhaseMethod backt dort sun_basis-abhaengigen
-    # Zustand ein (direct_sun_matrix, SunReceiver). Ohne diesen Patch liefe die
-    # Konstruktion auf dem Settings-Default 'r6', bevor die Post-Init-Schleife
-    # unten sun_bas!='r2' setzen koennte -> r6-Arrays landen unter r2-Cache-Keys.
+    # Set sun_basis BEFORE FivePhaseMethod is constructed. EnergyPlusSetup.__init__ builds the
+    # workflows, and FivePhaseMethod bakes sun-basis dependent state into them (direct_sun_matrix,
+    # SunReceiver). Without this patch construction would use the settings default 'r6' before the
+    # post-init loop below could set 'r2', and r6 arrays would end up under r2 cache keys.
     _orig_fm_init = _fm.FivePhaseMethod.__init__
 
     def _fm_init_with_env_sun_basis(self, config, *a, **kw):
@@ -108,7 +101,7 @@ def apply_five_phase_wiring() -> bool:
         use_5pm = os.environ.get("FRADS_USE_FIVE_PHASE") == "1"
         if use_5pm:
             kwargs.setdefault("radiance_method", "5phase")
-            # initialize_radiance erst nach Setzen der sun_basis ausfuehren.
+            # run initialize_radiance only after sun_basis is set
             user_init = kwargs.get("initialize_radiance", True)
             kwargs["initialize_radiance"] = False
         _orig_eps_init(self, *args, **kwargs)
@@ -120,14 +113,12 @@ def apply_five_phase_wiring() -> bool:
                 cfg.settings.sun_basis = sun_basis
                 cfg.settings.num_processors = nproc
             if user_init:
-                # Ein explizit an EnergyPlusSetup uebergebenes nproc-kwarg hat
-                # Vorrang vor FRADS_NPROC/CPU-Default (Spiegel zu
-                # run_ftg_calibration_sim.py: kwargs.get('nproc', nproc)).
+                # an nproc passed to EnergyPlusSetup explicitly wins over FRADS_NPROC
                 self.initialize_radiance(nproc=kwargs.get("nproc", nproc))
 
     _fr.EnergyPlusSetup.__init__ = _eps_init_with_env
 
-    # Variante-A Pfad-Skalierung (Default 1.0 = neutral, = X22-Zustand).
+    # Optional scaling of the sky and sun contributions (default 1.0 = unchanged).
     _orig_calc_sensor = _fm.FivePhaseMethod.calculate_sensor
 
     def _calc_sensor_with_env_scales(self, sensor, bsdf, time, dni, dhi, **kwargs):
@@ -137,11 +128,9 @@ def apply_five_phase_wiring() -> bool:
 
     _fm.FivePhaseMethod.calculate_sensor = _calc_sensor_with_env_scales
 
-    # SKY_SCALE/SUN_SCALE MUESSEN konsistent auch auf den Bild-/DGP-Pfad wirken:
-    # calculate_dgp holt Ev ueber das (skalierte) calculate_sensor, rendert das
-    # HDR aber ueber calculate_view. Ohne denselben Scale-Patch bekaeme evalglare
-    # skaliertes Ev zu unskaliertem HDR -> systematisch verzerrte DGP. calculate_view
-    # traegt dieselben sky_scale/sun_scale-Parameter wie calculate_sensor.
+    # SKY_SCALE/SUN_SCALE must act on the image/DGP path as well: calculate_dgp takes Ev from the
+    # (scaled) calculate_sensor but renders the HDR image with calculate_view. Without the same
+    # scaling evalglare would combine scaled Ev with an unscaled image and bias the DGP.
     _orig_calc_view = _fm.FivePhaseMethod.calculate_view
 
     def _calc_view_with_env_scales(self, view, bsdf, time, dni, dhi, **kwargs):

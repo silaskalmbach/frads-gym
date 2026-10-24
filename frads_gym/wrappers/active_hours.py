@@ -34,7 +34,7 @@ class ActiveHoursWrapper(gym.Wrapper):
             timesteps.  ``None`` (default) keeps the legacy behaviour: hold
             the agent's last action (zeros before the first agent step).
             A float is broadcast to the full action shape, e.g. ``0.0`` =
-            all panes fully tinted under the FTG ``facade_state_mapping``.
+            the first state of ``facade_state_mapping`` for every window.
     """
 
     def __init__(

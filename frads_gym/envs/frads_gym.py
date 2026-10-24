@@ -13,29 +13,78 @@ import re
 
 # Minimum observation history samples before switching to dynamic statistics.
 # Convention: 96 steps = 1 day at 15-min intervals.
-# Keep in sync with rewards.py and _reward_settings.py.
+# Reward functions that normalise dynamically should use the same warm-up.
 MIN_SAMPLES_DEFAULT = 96
 
 
 class FradsEnv(gym.Env):
-    """
-    Gymnasium environment for FRADS building control simulation.
-    
-    This environment allows control of:
-    - Facade shading (electrochromic glazing state)
-    - Cooling setpoint temperature
-    - Lighting power
+    """Gymnasium environment for facade control with EnergyPlus and Radiance (via frads).
+
+    EnergyPlus runs in a background thread and hands control to the environment at every zone
+    timestep: ``step(action)`` sets the glazing state of each controlled window, lets EnergyPlus and
+    Radiance advance one timestep and returns the observations defined in the configuration.
+
+    Observations and actions come from the configuration (see the configuration reference): every
+    active entry with an ``observation_space`` becomes a key of the ``Dict`` observation space, and
+    every entry with ``actuate_cfs_state`` adds one dimension in [low, high] to the ``Box`` action
+    space, in config order. ``facade_state_mapping`` maps each action value to a glazing state.
+
+    Only one environment can run per process (EnergyPlus callbacks reach the simulation through a
+    process-wide context, and the environment changes the working directory to ``output_dir``). Run
+    several environments with a subprocess vector env such as stable-baselines3's ``SubprocVecEnv``.
     """
     metadata = {"render_modes": ["ansi"]}
 
     def __init__(self, render_mode=None, output_dir=None, config_file=None, run_annual=False, cleanup=True, run_period=None, treat_weather_as_actual=False, weather_files_path=None, run_periods=None, number_of_timesteps_per_hour=1, reward_function=None, logging=False, enable_radiance=True, truncate_on="none", staggered_start=False, env_id=0, n_envs=1, normalizer_state_dir=None, weekday_from_ep=False, sync_first_action=False, truncate_month_only=False):
-        """
-        Initialize the FRADS gymnasium environment
+        """Create the environment; the configuration and arguments are checked first.
 
-        
         Args:
-            render_mode: Rendering mode (not fully implemented)
-            config_file: Path to configuration file
+            render_mode: ``None``, ``"raw_obs"`` (print the raw observation every step) or
+                ``"raw_time"`` (print the simulation time every step).
+            output_dir: Directory for EnergyPlus output, Radiance matrices and ``environment_log.csv``.
+                Required. The process changes its working directory to it.
+            config_file: Path to a JSON configuration file or the configuration as a dict. Relative
+                paths in a dict resolve against its ``config_dir`` key.
+            run_annual: Simulate the whole year (January 1 to December 31) regardless of the months
+                and days in ``run_period``.
+            cleanup: Remove ``eplusout``, ``Temp``, ``Octrees`` and ``Matrices`` in ``output_dir``
+                before starting.
+            run_period: ``{"begin_year", "begin_month", "begin_day", "end_year", "end_month",
+                "end_day"}``, any subset; applied to the first RunPeriod of the model. Missing years
+                default to 2002.
+            treat_weather_as_actual: Set the RunPeriod flag "Treat Weather as Actual".
+            weather_files_path: List of EPW files. Required. Each full reset (a new EnergyPlus run)
+                uses the next file in turn.
+            run_periods: One run period per weather file, used instead of ``run_period``.
+            number_of_timesteps_per_hour: EnergyPlus timesteps per hour (a divisor of 60); one
+                ``step()`` per timestep.
+            reward_function: Callable ``(obs, action, next_obs, info) -> float``. Required. ``obs``
+                and ``next_obs`` are the processed observations; ``info`` holds the raw values as
+                ``raw_current_<key>`` and ``raw_next_<key>``.
+            logging: Append every step to ``environment_log.csv`` in ``output_dir``.
+            enable_radiance: Compute daylight and glare with Radiance. Without it only EnergyPlus
+                runs; entries that need Radiance must then be inactive.
+            truncate_on: ``"none"``, ``"day"`` or ``"month"``: end an episode (``truncated=True``)
+                when the simulation date passes into a new day or month. EnergyPlus keeps running and
+                the next ``reset()`` continues from there.
+            staggered_start: Shift the start month of ``run_periods`` by ``env_id`` and by the number
+                of resets, so parallel environments see different seasons.
+            env_id: Index of this environment among ``n_envs`` parallel ones (for staggering).
+            n_envs: Number of parallel environments.
+            normalizer_state_dir: Directory with ``normalizer_state_<city_id>.pkl`` files to restore
+                the dynamic observation normalisation from an earlier run.
+            weekday_from_ep: Take the weekday of the observation from the EnergyPlus run-period
+                calendar instead of from the weather-file date.
+            sync_first_action: ``reset()`` returns the first observation without letting EnergyPlus
+                advance, so the first action acts on the transition that observation starts.
+            truncate_month_only: With ``truncate_on="month"``, ignore year changes that are not
+                month changes.
+
+        Raises:
+            frads_gym.validation.ConfigError: The configuration or an argument is invalid; the
+                message lists every problem.
+            RuntimeError: The configuration needs features of the frads fork that the installed
+                frads lacks.
         """
         self.render_mode = render_mode
         self.config_file = config_file
@@ -45,16 +94,17 @@ class FradsEnv(gym.Env):
         self.reward_function = reward_function
         self.truncated_flag = False
         self.truncate_on = truncate_on
-        # True: Wochentag der Beobachtung aus EnergyPlus (Kalender der RunPeriod, nach dem die
-        # Belegung laeuft) statt aus dem Datum, das das Quelljahr der Wetterdatei traegt.
-        # Default False haelt alte Modelle und das FTG (Live-Server liest die echte Uhr) unveraendert.
+        # True: take the weekday of the observation from EnergyPlus (the run-period calendar that
+        # drives the occupancy schedules) instead of from the date, which carries the source year
+        # of the weather file. Default False keeps the earlier behaviour.
         self.weekday_from_ep = weekday_from_ep
-        # True (seit 23.10.2026): reset() gibt den Controller nicht ohne Aktion frei. Sonst rechnet
-        # EnergyPlus dauerhaft einen Zeitschritt voraus und step(a) liefert eine Beobachtung, die vor a
-        # entstand (Aktion wirkt erst einen Schritt spaeter, Befund B 23.09.). Default False = Altstand (FTG).
+        # True: reset() does not release the controller without an action. Otherwise EnergyPlus runs
+        # one timestep ahead and step(a) returns an observation produced before a (the action takes
+        # effect one step later). Default False keeps the earlier behaviour.
         self.sync_first_action = sync_first_action
-        # True (seit 23.10.2026): Trunkierung nur beim Monatswechsel. Das Datum traegt das Quelljahr der
-        # Wetterdatei, der Jahreswechsel am Monatsanfang loeste sonst eine zweite 1-Schritt-Episode aus.
+        # True: with truncate_on="month", truncate only when the month changes. Dates carry the source
+        # year of the weather file, so a year change at a month start would otherwise end a second,
+        # one-step episode. Default False keeps the earlier behaviour.
         self.truncate_month_only = truncate_month_only
         validate_env_args(config_file=config_file, output_dir=output_dir, reward_function=reward_function,
                           weather_files_path=weather_files_path,
@@ -95,7 +145,7 @@ class FradsEnv(gym.Env):
             print(f"Loaded {len(loaded_config)} config entries, kept {len(self.epsetup_config)} active entries")
 
         # Expose effective per-sensor calibration factors to reward functions
-        # via info['calibration_<var_id>_k'] (2026-06-10). The frads_wrapper
+        # via info['calibration_<var_id>_k']. The frads_wrapper
         # controller (Phase 3.5) applies obs = max(0, k*raw) for every config
         # entry with {"calibration": {"method": "origin_scaling", "k": ...}},
         # so info['raw_next_<var_id>'] already carries the CALIBRATED value.
@@ -124,11 +174,11 @@ class FradsEnv(gym.Env):
 
         # Per-city observation-normalizer transfer. If a directory is
         # passed we look for normalizer_state_<city_id>.pkl inside it.
-        # Missing file → cold-start (expected for zero-shot test cities
-        # like Houston).
+        # Missing file → cold-start (expected for test cities the agent
+        # was not trained on).
         #
-        # Hard break: the legacy single-file `normalizer_state_path`
-        # parameter is no longer supported. See spec 2026-04-21.
+        # The legacy single-file `normalizer_state_path` parameter is no
+        # longer supported.
         if normalizer_state_dir:
             if not os.path.isdir(normalizer_state_dir):
                 raise FileNotFoundError(
@@ -366,11 +416,10 @@ class FradsEnv(gym.Env):
         # after an EnergyPlus (re)start times out (heavy solar/shadowing init
         # under multi-env contention), the env<->EP coupling is desynced; retry
         # a bounded number of full restarts instead of silently continuing on a
-        # key-less {'error'} obs (2026-06-06 hardening — this path was previously
-        # unguarded; the step() path already truncates on the same error).
-        # sync_first_action: die erste Beobachtung holen, ohne den Controller freizugeben. Nach einer
-        # Trunkierung laeuft EnergyPlus weiter und wartet schon auf die naechste Aktion; die Beobachtung,
-        # die die alte Episode beendet hat, ist dann die erste der neuen (kein Leerschritt ohne Aktion).
+        # key-less {'error'} obs (the step() path truncates on the same error).
+        # sync_first_action: fetch the first observation without releasing the controller. After a
+        # truncation EnergyPlus keeps running and already waits for the next action; the observation
+        # that ended the old episode is the first one of the new episode (no step without an action).
         release = not self.sync_first_action
         if not (was_truncated and self.sync_first_action):
             self.raw_next_obs = self.simulation.steps(release=release)
@@ -411,10 +460,10 @@ class FradsEnv(gym.Env):
         # fresh EnergyPlus process starts the year at 0. On a truncated
         # continuation EnergyPlus keeps running and reset() advanced it by one
         # step above, so the running year index must CONTINUE — resetting it to
-        # 0 would make the R1+ oracle lookup (info['raw_next_step_idx']) read
-        # January rows for every post-truncation month.
+        # 0 would make lookups by info['raw_next_step_idx'] read January rows
+        # for every post-truncation month.
         if was_truncated:
-            # Mit sync_first_action rechnet reset() keinen Schritt voraus, der Index bleibt stehen.
+            # with sync_first_action reset() does not step ahead, so the index stays
             self._step_idx = getattr(self, '_step_idx', 0) + (0 if self.sync_first_action else 1)
         else:
             self._step_idx = 0
@@ -425,10 +474,9 @@ class FradsEnv(gym.Env):
         if hasattr(self.simulation, '_active_weather_idx'):
             self.info['weather_file_idx'] = self.simulation._active_weather_idx
 
-        # Expose city_id + step_idx in info so reward functions (e.g. R1+ /
-        # auto_rewards.energy_auto_r1p) can look up per-step oracle values
-        # without relying on side-channels. List-wrapping matches the existing
-        # raw_next_* convention.
+        # Expose city_id + step_idx in info so reward functions can look up
+        # per-step reference values without side-channels. List-wrapping
+        # matches the existing raw_next_* convention.
         try:
             city_id = self.get_city_id()
         except Exception:
@@ -502,7 +550,7 @@ class FradsEnv(gym.Env):
                 city_id = "unknown"
 
             # Update info — include city/step keys so downstream consumers
-            # (R1+ / oracle replay) can still identify the final step.
+            # can still identify the final step.
             info = {
                 'simulation_finished': True,
                 'raw_next_city_id': [city_id],
@@ -528,8 +576,8 @@ class FradsEnv(gym.Env):
             next_observation = self._process_observation(self.raw_next_obs)
 
             # Advance step counter and expose city_id + step_idx so that the
-            # final-step reward call below sees the same R1+ context as
-            # regular steps.
+            # final-step reward call below sees the same context as regular
+            # steps.
             self._step_idx = getattr(self, '_step_idx', 0) + 1
             try:
                 city_id = self.get_city_id()
@@ -565,9 +613,8 @@ class FradsEnv(gym.Env):
                 self.info[f'raw_next_{key}'] = np.array([value], dtype=np.float32)
 
         # Advance per-episode step counter and expose city_id + step_idx for
-        # reward functions that need to look up per-step oracle values (e.g.
-        # auto_rewards.energy_auto_r1p / R1+). City id is cached after the
-        # first call, so this is cheap.
+        # reward functions that look up per-step reference values. City id is
+        # cached after the first call, so this is cheap.
         self._step_idx = getattr(self, '_step_idx', 0) + 1
         try:
             city_id = self.get_city_id()
@@ -1227,7 +1274,7 @@ class FradsEnv(gym.Env):
         """
         Process observation values based on the configuration.
         Either normalizes to [0,1] range or standardizes (z-score) based on config.
-        Now supports dynamic normalization similar to rewards.py
+        Supports static, dynamic (windowed) and EMA normalization.
     
         Args:
             key: The observation key

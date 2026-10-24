@@ -48,11 +48,11 @@ def file_sha256(path):
 
 
 def sensor_digest(wf):
-    """Pruefsumme der Sensoren eines Radiance-Workflows fuer feste Matrizen.
+    """Checksum of the sensors of a Radiance workflow, used to match fixed matrices.
 
-    ponytail: Positionen auf 0,1 mm gerundet (+0.0 gegen -0.0), damit Linux und Windows denselben
-    Wert liefern; Aenderungen am Radiance-Modell ausser Sensoren und Gebaeudemodell (z. B. andere
-    CFS-Fenstergruppen in der Config) erkennt die Pruefung nicht.
+    ponytail: positions rounded to 0.1 mm (+0.0 against -0.0) so Linux and Windows agree; changes
+    of the Radiance model other than sensors and building model (e.g. other CFS window groups in
+    the config) go unnoticed.
     """
     sensors = {
         name: (np.round(np.asarray(cfg.data, dtype=float), 4) + 0.0).tolist() if cfg.data
@@ -168,16 +168,15 @@ class FradsSimulation:
         Initialize the EnergyPlus simulation.
         
         Args:
-            output_dir (str, optional): Directory where simulation will store output files.
-                                        If None, uses the directory where the script is located.
-            config_file (str or dict, optional): Path to the configuration file OR a dictionary containing configuration. 
-                                                 If None, uses "epsetup_config.json" in the script directory.
+            output_dir (str): Directory where the simulation stores its output files. Required.
+            config_file (str or dict): Path to the configuration file or the configuration as a dict.
+                Required. Relative paths in a dict resolve against its 'config_dir' key.
             run_annual (bool): If True, run the simulation in annual mode.
             cleanup (bool): If True, remove existing output directory before starting the simulation.
             run_period (dict, optional): Dictionary specifying the run period for the simulation.
                                         Example: {"begin_year": 2002, "begin_month": 1, "begin_day": 1, "end_year": 2002, "end_month": 12, "end_day": 31}
             treat_weather_as_actual (bool): If True, treat weather data as actual.
-            weather_files_path (str, optional): Path to the weather files directory. ["weather_file1.epw", "weather_file2.epw"]
+            weather_files_path (list): EPW files, e.g. ["weather_file1.epw", "weather_file2.epw"]. Required.
             number_of_timesteps_per_hour (int): Number of timesteps per hour for the simulation.
             staggered_start (bool): If True, stagger the start month deterministically based on env_id and reset count.
             env_id (int): The ID of the environment, used for staggering start months to decorrelate training data.
@@ -194,7 +193,7 @@ class FradsSimulation:
         self.run_periods=run_periods  # List of dicts parallel to weather_files_path
         self.current_weather_idx = 0
         self.staggered_start = staggered_start
-        self.weekday_from_ep = weekday_from_ep  # Wochentag aus EnergyPlus in die Beobachtung
+        self.weekday_from_ep = weekday_from_ep  # weekday from EnergyPlus into the observation
         self.env_id = env_id
         self.n_envs = n_envs
         self.reset_count = 0
@@ -286,7 +285,7 @@ class FradsSimulation:
         # Try to get model path or type
         model_path = model_setup.get("model_path")
         model_type = model_setup.get("model_type")
-        self.model_file = None  # geladene Modelldatei, Schluessel fuer feste Matrizen
+        self.model_file = None  # loaded model file, key of the fixed matrix set
         
         # Load model based on available configuration
         if model_path:
@@ -442,7 +441,7 @@ class FradsSimulation:
         # and the background thread can be joined BEFORE the caller's
         # epsetup.close() -> api.state_manager.delete_state(). Calling
         # delete_state() while that run() thread is still live blocks the main
-        # thread forever in a futex (observed 2026-06-06 deadlock at 99.1%).
+        # thread forever in a futex (observed as a deadlock).
         if hasattr(self, 'epsetup'):
             try:
                 self.epsetup.api.runtime.stop_simulation(self.epsetup.state)
@@ -500,26 +499,26 @@ class FradsSimulation:
         apply_custom_radiance_config(self.epsetup, self.epsetup_config)
 
     def _use_fixed_matrices(self, root):
-        """Feste Radiance-Matrizen (Config model_setup.fixed_matrices oder FRADS_MATRIX_DIR, seit 22.10.2026).
+        """Fixed Radiance matrices (config model_setup.fixed_matrices or FRADS_MATRIX_DIR).
 
-        frads tastet die Sensor-Fenster-Matrizen zufaellig ab; ohne festen Satz zieht jeder Lauf
-        (die Zone mit eigenem Sensor sogar jeder Reset) eine eigene Realisierung, am Blendungspunkt
-        etwa +-3 % E_v. Hier liest jede Zone <root>/<IDF-Name>/<Zone>.npz eines einmal erzeugten
-        Satzes und prueft ihn gegen manifest.json (Gebaeudemodell, Sensoren, Dateien).
-        FRADS_MATRIX_WRITE=1 erzeugt den Satz statt ihn zu lesen (rl/evaluation/make_fixed_matrices.py).
+        frads samples the sensor-window matrices randomly; without a fixed set every run (and a zone
+        with its own sensor even every reset) draws its own realisation, about +-3 % in E_v at a glare
+        sensor. Here every zone reads <root>/<IDF name>/<zone>.npz of a set created once and checks it
+        against manifest.json (building model, sensors, files). FRADS_MATRIX_WRITE=1 creates the set
+        instead of reading it.
         """
         if not self.model_file:
-            raise RuntimeError("FRADS_MATRIX_DIR braucht model_setup.model_path (kein Fallback-Modell)")
+            raise RuntimeError("fixed matrices need model_setup.model_path (they are keyed by the model file)")
         set_dir = Path(root) / Path(self.model_file).stem
         write = os.environ.get("FRADS_MATRIX_WRITE") == "1"
-        # vor dem Erzeugen/Laden gebildet, beim Schreiben fuer das Manifest aufbewahrt
+        # computed before matrices are created or loaded; kept for the manifest when writing
         self.fixed_matrix_digests = {z: sensor_digest(wf) for z, wf in self.epsetup.rworkflows.items()}
         if write:
             set_dir.mkdir(parents=True, exist_ok=True)
         else:
             manifest = json.loads((set_dir / "manifest.json").read_text())
             if manifest["model_sha256"] != file_sha256(self.model_file):
-                raise RuntimeError(f"{set_dir}: Gebaeudemodell geaendert, festen Satz neu erzeugen")
+                raise RuntimeError(f"{set_dir}: the building model changed, create the fixed set again")
         for zone, wf in self.epsetup.rworkflows.items():
             wf.mfile = set_dir / f"{zone}.npz"
             wf.config.settings.overwrite = write
@@ -527,9 +526,9 @@ class FradsSimulation:
                 continue
             entry = manifest["zones"][zone]
             if entry["sensors_sha256"] != self.fixed_matrix_digests[zone]:
-                raise RuntimeError(f"{set_dir}: Sensoren von {zone} passen nicht zum festen Satz")
+                raise RuntimeError(f"{set_dir}: the sensors of {zone} do not match the fixed set")
             if entry["npz_sha256"] != file_sha256(wf.mfile):
-                raise RuntimeError(f"{wf.mfile}: Pruefsumme stimmt nicht mit manifest.json")
+                raise RuntimeError(f"{wf.mfile}: checksum does not match manifest.json")
 
     def _register_controller(self):
         """
@@ -541,7 +540,7 @@ class FradsSimulation:
         already handles variable registration explicitly, the AST analysis
         is redundant and we register the callback directly via the runtime API.
 
-        API-BIAS FIX (2026-04): We register with
+        We register with
         `callback_end_system_timestep_after_hvac_reporting` instead of the
         previous `callback_begin_system_timestep_before_predictor`. The former
         fires AT THE END of each HVAC sub-timestep, when the system-timestep
@@ -554,7 +553,7 @@ class FradsSimulation:
         (plus zone-level variables and agent step) at the end of each zone
         timestep. This recovers 100% of the HVAC energy that the previous
         begin-of-system callback was missing (it captured only ~20-90% depending
-        on the HVAC sub-stepping factor — see verify_api_bias_fix.py).
+        on the HVAC sub-stepping factor).
         """
         self.epsetup.api.runtime.callback_end_system_timestep_after_hvac_reporting(
             self.epsetup.state, simplified_controller_wrapper
@@ -583,8 +582,8 @@ class FradsSimulation:
                 # the live daemon leaks its multi-GB EP state (a live thread is
                 # never GC'd, so "leaving its state to be GC'd" never happens) and
                 # a second concurrent EP run in the same process deadlocks at the
-                # solar init (observed 2026-06-06 v3@99% / 2026-06-08 v5@33%, 0%
-                # CPU, host swap-saturated for ~9h). Under SubprocVecEnv every env
+                # solar init (observed: 0 % CPU, host swap-saturated for hours).
+                # Under SubprocVecEnv every env
                 # owns its own subprocess, so the only clean recovery is to let
                 # THIS subprocess die: the OS reclaims the leaked state, and
                 # SubprocVecEnv surfaces the dead worker -> the trial fails fast
@@ -605,7 +604,7 @@ class FradsSimulation:
                 # callable wrapping save_normalizer_state); it is optional, so
                 # a missing hook is a silent no-op. The save runs in a daemon
                 # thread with a bounded join so a wedged pickle can never trade
-                # this exit for another hang ("kein unbegrenztes Warten").
+                # this exit for another hang (no unbounded wait).
                 hook = getattr(self, "_normalizer_save_hook", None)
                 if callable(hook):
                     try:
@@ -814,8 +813,8 @@ class FradsSimulation:
             if action_data:
                 self.action_data_queue.put(action_data, timeout=600)
 
-            # Signal controller to continue. release=False holt nur die naechste Beobachtung, ohne den
-            # Controller freizugeben (erste Beobachtung nach dem EnergyPlus-Start, sync_first_action).
+            # Signal controller to continue. release=False only fetches the next observation without
+            # releasing the controller (first observation after the EnergyPlus start, sync_first_action).
             if release:
                 self.next_step_event.set()
 
@@ -973,7 +972,7 @@ def controller(state):
     Controller function called at each EnergyPlus timestep.
     Uses the epsetup_config to dynamically collect observations.
 
-    API-BIAS FIX (2026-04): registered with
+    Registered with
     `end_system_timestep_after_hvac_reporting`, meaning this function fires
     ONCE per HVAC system sub-timestep. The sub-step count per zone timestep
     can be 1 to ~10 depending on HVAC solver convergence. For HVAC-energy
@@ -1048,8 +1047,8 @@ def controller(state):
     ###################################
     # Initialize observation data with datetime
     obs_data = {'datetime': simulation.epsetup.get_datetime()}
-    # Wochentag nach dem Kalender der RunPeriod (1=Sonntag ... 7=Samstag), nach dem
-    # EnergyPlus die Belegung plant; das Datum oben traegt das Quelljahr der Wetterdatei.
+    # weekday of the run-period calendar (1 = Sunday ... 7 = Saturday) that drives the occupancy
+    # schedules; the date above carries the source year of the weather file
     if simulation.weekday_from_ep:
         obs_data['day_of_week'] = simulation.epsetup.api.exchange.day_of_week(simulation.epsetup.state)
 
@@ -1418,7 +1417,7 @@ def controller(state):
     # blocks this EnergyPlus thread forever if the main thread stopped draining
     # (forced teardown after a >timeout step). Re-checking shutdown_event lets
     # the thread return so EnergyPlus can honor stop_simulation() and exit,
-    # instead of wedging the subsequent delete_state() (2026-06-06 deadlock).
+    # instead of wedging the subsequent delete_state().
     while not simulation.shutdown_event.is_set():
         try:
             simulation.obs_data_queue.put(obs_data, timeout=1.0)
