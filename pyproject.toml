@@ -5,8 +5,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["frads_gym"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
+[tool.hatch.build.targets.sdist]
+include = ["frads_gym", "tests", "examples", "README.md", "LICENSE", "CHANGELOG.md", "CITATION.cff",
+           "requirements-5pm.txt"]
 
 [project]
 name = "frads-gym"
