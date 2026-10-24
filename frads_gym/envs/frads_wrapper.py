@@ -1348,13 +1348,8 @@ def controller(state):
                     area_m2 = lighting_calc["area_m2"]
                     power_density = power_density_m2 * area_m2
                     # print(f"Using area-based calculation for {var_id}: {power_density_m2} W/m² × {area_m2} m² = {power_density} W")
-                elif "power_density" in lighting_calc:
-                    # Use direct power density value (backwards compatibility)
+                else:  # validate_config requires power_density or power_density_m2 + area_m2
                     power_density = lighting_calc["power_density"]
-                else:
-                    # print(f"Warning: Neither 'power_density' nor 'power_density_m2' + 'area_m2' specified for {var_id}")
-                    obs_data[var_id] = 0.0
-                    continue
                 
                 # Calculate lighting power based on the dependency value (WPI)
                 wpi_value = obs_data[depends_on_key]
@@ -1381,8 +1376,7 @@ def controller(state):
                 zone_name = zone.upper()
                 simulation.epsetup.actuate_lighting_power(light=zone_name, value=lighting_power)
             else:
-                print(f"Warning: Dependency '{depends_on_key}' not found for '{var_id}'")
-                obs_data[var_id] = 0.0
+                raise RuntimeError(f"'{var_id}': '{depends_on_key}' is not in the observation data")
     
     # 6. Process all divider entries BEFORE calculate_energy_sum
     for var_id, var_info in simulation.epsetup_config.items():

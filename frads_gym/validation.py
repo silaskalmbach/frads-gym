@@ -111,13 +111,28 @@ def validate_config(config):
         if cal is not None and not (isinstance(cal, dict) and cal.get("method") == "origin_scaling"
                                     and isinstance(cal.get("k", 1.0), Real)):
             errors.append(f"'{k}.calibration' must be {{\"method\": \"origin_scaling\", \"k\": <number>}}")
-        if "lighting_power_calculation" in v and "depends_on" not in v:
-            errors.append(f"'{k}': 'lighting_power_calculation' needs 'depends_on'")
+        lp = v.get("lighting_power_calculation")
+        if lp is not None:
+            dep = active.get(v.get("depends_on"), {})
+            if "calculate_illuminance" not in dep:
+                errors.append(f"'{k}': 'lighting_power_calculation' needs 'depends_on' naming an active "
+                              "calculate_illuminance entry")
+            if not (isinstance(lp, dict) and "lux_threshold" in lp
+                    and ("power_density" in lp or {"power_density_m2", "area_m2"} <= set(lp))):
+                errors.append(f"'{k}.lighting_power_calculation' needs 'lux_threshold' and 'power_density' "
+                              "[W] or 'power_density_m2' [W/m2] with 'area_m2'")
+            if isinstance(lp, dict) and lp.get("occupancy_key") is not None:
+                refs_extra = [lp["occupancy_key"]]
+            else:
+                refs_extra = []
+        else:
+            refs_extra = []
         refs = [v.get("depends_on")]
         refs += (v.get("calculate_energy_sum") or {}).get("keys_to_sum", [])
         refs += [(v.get("calculate_allocation") or {}).get(x)
                  for x in ("source_key", "numerator_key", "denominator_key")]
         refs.append((v.get("calculate_dgp") or {}).get("ev_sensor"))
+        refs += refs_extra
         errors += [f"'{k}' refers to '{r}', which is not an active entry"
                    for r in refs if r is not None and r not in active]
     _raise(errors, "configuration")
