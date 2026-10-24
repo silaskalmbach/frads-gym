@@ -41,7 +41,8 @@ Homepage = "https://github.com/silaskalmbach/frads-gym"
 Repository = "https://github.com/silaskalmbach/frads-gym"
 
 [project.optional-dependencies]
-dev = ["pre-commit"]
+test = ["pytest>=8"]
+dev = ["pre-commit", "pytest>=8"]
 
 [tool.pytest.ini_options]
 markers = [
