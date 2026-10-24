@@ -42,3 +42,9 @@ Repository = "https://github.com/silaskalmbach/frads-gym"
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: runs longer than a few seconds",
+    "simulation: starts EnergyPlus (run through scripts/sim-run on shared machines)",
+]

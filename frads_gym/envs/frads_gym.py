@@ -5,6 +5,7 @@ import os
 import csv
 import pickle
 from .frads_wrapper import FradsSimulation
+from ..validation import validate_config, validate_env_args
 import sys
 import json
 import math
@@ -55,6 +56,11 @@ class FradsEnv(gym.Env):
         # True (seit 23.10.2026): Trunkierung nur beim Monatswechsel. Das Datum traegt das Quelljahr der
         # Wetterdatei, der Jahreswechsel am Monatsanfang loeste sonst eine zweite 1-Schritt-Episode aus.
         self.truncate_month_only = truncate_month_only
+        validate_env_args(config_file=config_file, output_dir=output_dir, reward_function=reward_function,
+                          weather_files_path=weather_files_path,
+                          number_of_timesteps_per_hour=number_of_timesteps_per_hour, truncate_on=truncate_on,
+                          run_period=run_period, run_periods=run_periods, staggered_start=staggered_start,
+                          env_id=env_id, n_envs=n_envs)
         # Stash for get_city_id's fallback path when self.simulation.weather_files_path is unset.
         self._weather_files_path = weather_files_path
 
@@ -82,6 +88,7 @@ class FradsEnv(gym.Env):
         else:
             self.config_dir = os.path.dirname(os.path.abspath(__file__))
 
+        validate_config(loaded_config)
         if loaded_config:
             # Filter out inactive entries
             self.epsetup_config = {k: v for k, v in loaded_config.items() if isinstance(v, dict) and v.get("active", True)}
@@ -1623,8 +1630,8 @@ class FradsEnv(gym.Env):
             action_lows = []
             action_highs = []
             
-            # Sort by key to ensure consistent order
-            for var_id in sorted(action_entries.keys()):
+            # Config order, the same order _process_action actuates in
+            for var_id in action_entries:
                 action_lows.append(action_entries[var_id]["low"])
                 action_highs.append(action_entries[var_id]["high"])
             
