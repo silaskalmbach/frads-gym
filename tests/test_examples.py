@@ -58,3 +58,26 @@ def test_dark_glazing_lowers_cooling(quickstart):
     finally:
         env.close()
     assert 0 < dark < clear
+
+
+def test_fixed_matrices_make_runs_repeatable(quickstart, monkeypatch):
+    """A set written with FRADS_MATRIX_WRITE=1 is read back and gives identical results."""
+    from pyenergyplus.dataset import ref_models
+
+    config = quickstart.make_config()
+    config["model_setup"].update(model_path=ref_models["medium_office"],
+                                 fixed_matrices=str(quickstart.HERE / "fixed"))
+    runs = []
+    for write in ("1", "0"):
+        monkeypatch.setenv("FRADS_MATRIX_WRITE", write)
+        from frads_gym import FradsEnv
+
+        env = FradsEnv(output_dir=str(quickstart.HERE / f"fixed_run{write}"), config_file=config,
+                       weather_files_path=[quickstart.WEATHER], number_of_timesteps_per_hour=4,
+                       reward_function=lambda *a: 0.0, run_period=DAY)
+        try:
+            runs.append(_run(env, lambda hour: 0.1, "wpi")[30:60])
+        finally:
+            env.close()
+    assert (quickstart.HERE / "fixed" / "RefBldgMediumOfficeNew2004_Chicago" / "manifest.json").is_file()
+    assert runs[0] == runs[1] and max(runs[0]) > 1000

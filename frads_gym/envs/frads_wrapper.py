@@ -530,6 +530,19 @@ class FradsSimulation:
             if entry["npz_sha256"] != file_sha256(wf.mfile):
                 raise RuntimeError(f"{wf.mfile}: checksum does not match manifest.json")
 
+    def _write_fixed_matrix_manifest(self, root):
+        """Write manifest.json for a set just created with FRADS_MATRIX_WRITE=1 (read by _use_fixed_matrices)."""
+        set_dir = Path(root) / Path(self.model_file).stem
+        manifest = {
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            "model": Path(self.model_file).name,
+            "model_sha256": file_sha256(self.model_file),
+            "zones": {z: {"sensors_sha256": self.fixed_matrix_digests[z], "npz_sha256": file_sha256(wf.mfile)}
+                      for z, wf in self.epsetup.rworkflows.items()},
+        }
+        (set_dir / "manifest.json").write_text(json.dumps(manifest, indent=1))
+        print(f"Wrote fixed matrix set {set_dir} ({len(manifest['zones'])} zones)")
+
     def _register_controller(self):
         """
         Register the controller with EnergyPlus without triggering AST analysis errors.
@@ -743,6 +756,8 @@ class FradsSimulation:
                 self.epsetup.initialize_radiance(view_matrices=True)
             else:
                 self.epsetup.initialize_radiance()
+            if fixed and os.environ.get("FRADS_MATRIX_WRITE") == "1":
+                self._write_fixed_matrix_manifest(self._resolve(fixed))
 
         # Set the simulation instance in the global context singleton
         context.simulation = self
