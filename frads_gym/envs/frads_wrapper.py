@@ -23,7 +23,7 @@ import pyradiance as pr
 from pyenergyplus.dataset import ref_models, weather_files
 import os
 import sys
-from epmodel import epmodel as epm
+from pyenergyplus.model import model as epm
 import threading
 import queue
 import time
@@ -32,11 +32,6 @@ import shutil
 from pathlib import Path
 import json
 
-# Add rl/subroutines to path for shared utilities
-_subroutines_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'rl', 'subroutines'))
-if _subroutines_path not in sys.path:
-    sys.path.append(_subroutines_path)
-from radiance_utils import apply_custom_radiance_config
 import hashlib
 import numpy as np
 
@@ -62,6 +57,75 @@ def sensor_digest(wf):
         for name, cfg in sorted(wf.config.model.sensors.items())
     }
     return hashlib.sha256(json.dumps(sensors, sort_keys=True).encode()).hexdigest()
+
+def apply_custom_radiance_config(epsetup, epsetup_config: dict) -> set[str]:
+    """Apply custom sensor/view positions from *epsetup_config* to *epsetup*.
+
+    Reads optional ``sensor_position``/``sensor_direction`` from
+    ``calculate_illuminance`` entries and ``view_position``/``view_direction``
+    from ``calculate_edgps`` entries.  When present, overrides the
+    auto-generated sensor/view with user-defined placement.
+
+    After modifying rconfigs, affected zone workflows are recreated so that
+    ThreePhaseMethod picks up the new sensor/view senders.
+
+    Returns:
+        Set of zone names whose workflows were recreated.
+    """
+    modified_zones: set[str] = set()
+
+    for var_id, var_info in epsetup_config.items():
+        if not isinstance(var_info, dict):
+            continue
+
+        # Custom illuminance sensor placement
+        if "calculate_illuminance" in var_info:
+            illum_cfg = var_info["calculate_illuminance"]
+            if "sensor_position" in illum_cfg and "sensor_direction" in illum_cfg:
+                zone = illum_cfg["zone"]
+                pos = illum_cfg["sensor_position"]
+                dir_ = illum_cfg["sensor_direction"]
+                sensor_data = [pos + dir_]  # [x, y, z, dx, dy, dz]
+                # Add as a NEW sensor keyed by var_id so it doesn't
+                # overwrite the default WPI grid sensor.
+                epsetup.rconfigs[zone].model.sensors[var_id] = SensorConfig(data=sensor_data)
+                modified_zones.add(zone)
+                print(f"Custom illuminance sensor '{var_id}' at {pos} dir {dir_} in zone '{zone}'")
+
+        # Custom eDGP view/sensor placement
+        if "calculate_edgps" in var_info:
+            edgp_cfg = var_info["calculate_edgps"]
+            if "view_position" in edgp_cfg and "view_direction" in edgp_cfg:
+                zone = edgp_cfg["zone"]
+                pos = edgp_cfg["view_position"]
+                dir_ = edgp_cfg["view_direction"]
+
+                first_view_key = next(iter(epsetup.rconfigs[zone].model.views.keys()))
+                view = pr.create_default_view()
+                view.vp = tuple(pos)
+                view.vdir = tuple(dir_)
+                view.type = "a"
+                view.horiz = 180
+                view.vert = 180
+                epsetup.rconfigs[zone].model.views[first_view_key] = ViewConfig(view=view)
+
+                sensor_data = [pos + dir_]
+                epsetup.rconfigs[zone].model.sensors[first_view_key] = SensorConfig(data=sensor_data)
+                modified_zones.add(zone)
+                print(f"Custom eDGP view (replaced '{first_view_key}') at {pos} dir {dir_} in zone '{zone}'")
+
+    # Recreate workflows for modified zones so the original PhaseMethod picks
+    # up new senders. Preserve the workflow class chosen at
+    # ``EnergyPlusSetup(radiance_method=...)`` (default 3PM, optionally 5PM).
+    # Earlier versions hard-coded ``fr.ThreePhaseMethod`` here, which silently
+    # downgraded any 5PM setup back to 3PM — see PR/issue tracker.
+    for zone in modified_zones:
+        epsetup.rconfigs[zone].settings.overwrite = True
+        workflow_cls = type(epsetup.rworkflows[zone])
+        epsetup.rworkflows[zone] = workflow_cls(epsetup.rconfigs[zone])
+
+    return modified_zones
+
 
 # settings = fr.Settings()
 # settings.num_processors = 4
@@ -435,8 +499,8 @@ class FradsSimulation:
     def _apply_custom_radiance_config(self):
         """Apply custom sensor/view positions from epsetup_config to Radiance rconfigs.
 
-        Delegates to the shared utility in radiance_utils.py so that
-        MatricesManager can reuse the same logic during matrix regeneration.
+        Delegates to the module-level apply_custom_radiance_config so that
+        callers outside the environment (e.g. matrix regeneration) can reuse it.
         """
         apply_custom_radiance_config(self.epsetup, self.epsetup_config)
 

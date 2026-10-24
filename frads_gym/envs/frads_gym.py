@@ -4,7 +4,6 @@ import numpy as np
 import os
 import csv
 import pickle
-import pandas as pd
 from .frads_wrapper import FradsSimulation
 import sys
 import json

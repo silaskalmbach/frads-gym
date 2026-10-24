@@ -29,9 +29,10 @@ classifiers = [
 ]
 dependencies = [
     "gymnasium>=1.0.0",
-    "pandas>=2.0.0",
+    "numpy>=1.24.4",
     "pyenergyplus-lbnl>=25.2.0",
     "frads>=2.0.0",
+    "pyradiance",
 ]
 
 [project.urls]
