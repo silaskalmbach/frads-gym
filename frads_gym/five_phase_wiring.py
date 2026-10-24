@@ -16,10 +16,35 @@ liefe das Training auf 3PM -> Methodenbruch zur Kalibrierung (2026-06-04).
 Verifizieren via Lauf-Log ``[CALLER_CALC_SENSOR] workflow_type=FivePhaseMethod``.
 """
 
+import inspect
 import os
 import warnings
 
 _APPLIED = False
+_FORK = False  # frads with the five-phase extensions (github.com/silaskalmbach/frads), set on apply
+
+# Environment variables that change results but only exist in the frads fork; upstream frads
+# would silently ignore them.
+FORK_ENV_VARS = (
+    "FRADS_USE_FIVE_PHASE", "SKY_SCALE", "SUN_SCALE", "FRADS_USE_ABSDF", "FRADS_USE_TT_T",
+    "FRADS_ABSDF_XML_DIR", "FRADS_TT_XML_DIR", "FRADS_HYBRID_DIRECT", "FRADS_SKIP_ABSDF_SENSOR_SUN",
+    "FRADS_BLACKED_OCTREE_MODIFIER", "FRADS_SKY_ROTATION", "FRADS_FASSADE",
+)
+
+
+def check_frads_capabilities(config: dict) -> None:
+    """Raise if *config* or the environment needs features that only the frads fork provides."""
+    if _FORK:
+        return
+    needs = [v for v in FORK_ENV_VARS if os.environ.get(v, "") not in ("", "0")]
+    needs += [f"{k}: calculate_dgp" for k, v in config.items() if isinstance(v, dict) and "calculate_dgp" in v]
+    if needs:
+        import frads
+        raise RuntimeError(
+            f"The installed frads {getattr(frads, '__version__', '?')} lacks the five-phase extensions "
+            f"needed by: {', '.join(needs)}. Install the fork with "
+            "`pip install -r requirements-5pm.txt` or remove these settings."
+        )
 
 
 def apply_five_phase_wiring() -> bool:
@@ -37,6 +62,27 @@ def apply_five_phase_wiring() -> bool:
     except ImportError as exc:  # pragma: no cover
         warnings.warn(f"five_phase_wiring: frads-Import fehlgeschlagen: {exc}")
         return False
+
+    global _FORK
+    _FORK = "radiance_method" in inspect.signature(_fr.EnergyPlusSetup.__init__).parameters
+
+    # frads_wrapper ruft initialize_radiance() ohne nproc -> eplus.py-Default
+    # nproc=1 (rcontrib single-thread). FRADS_NPROC honorieren.
+    _orig_init_rad = _fr.EnergyPlusSetup.initialize_radiance
+
+    def _init_rad_with_env(self, zones=None, nproc=None, view_matrices=False):
+        if nproc is None:
+            default_nproc = max(1, (os.cpu_count() or 4) // 2)
+            nproc = int(os.environ.get("FRADS_NPROC", default_nproc))
+        # view_matrices only exists in the fork; pass it only when requested
+        kw = {"view_matrices": True} if view_matrices else {}
+        return _orig_init_rad(self, zones=zones, nproc=nproc, **kw)
+
+    _fr.EnergyPlusSetup.initialize_radiance = _init_rad_with_env
+
+    _APPLIED = True
+    if not _FORK:
+        return True
 
     # sun_basis VOR der FivePhaseMethod-Konstruktion in die Config injizieren.
     # eplus.py baut die Workflows (FivePhaseMethod.__init__) INNERHALB von
@@ -81,18 +127,6 @@ def apply_five_phase_wiring() -> bool:
 
     _fr.EnergyPlusSetup.__init__ = _eps_init_with_env
 
-    # frads_wrapper ruft initialize_radiance() ohne nproc -> eplus.py-Default
-    # nproc=1 (rcontrib single-thread). FRADS_NPROC honorieren.
-    _orig_init_rad = _fr.EnergyPlusSetup.initialize_radiance
-
-    def _init_rad_with_env(self, zones=None, nproc=None, view_matrices=False):
-        if nproc is None:
-            default_nproc = max(1, (os.cpu_count() or 4) // 2)
-            nproc = int(os.environ.get("FRADS_NPROC", default_nproc))
-        return _orig_init_rad(self, zones=zones, nproc=nproc, view_matrices=view_matrices)
-
-    _fr.EnergyPlusSetup.initialize_radiance = _init_rad_with_env
-
     # Variante-A Pfad-Skalierung (Default 1.0 = neutral, = X22-Zustand).
     _orig_calc_sensor = _fm.FivePhaseMethod.calculate_sensor
 
@@ -116,6 +150,4 @@ def apply_five_phase_wiring() -> bool:
         return _orig_calc_view(self, view, bsdf, time, dni, dhi, **kwargs)
 
     _fm.FivePhaseMethod.calculate_view = _calc_view_with_env_scales
-
-    _APPLIED = True
     return True

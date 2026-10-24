@@ -35,6 +35,9 @@ import json
 import hashlib
 import numpy as np
 
+from frads_gym.cfs_thermal import CFSThermalModel, add_other_equipment
+from frads_gym.five_phase_wiring import check_frads_capabilities
+
 
 def file_sha256(path):
     h = hashlib.sha256()
@@ -264,6 +267,7 @@ class FradsSimulation:
         self.simulation_lock = threading.RLock()        # Reentrant lock for thread-safe operations
 
         # Initialize the simulation environment
+        check_frads_capabilities(self.epsetup_config)
         self._model_setup()
         self._simulation_config()
 
@@ -347,7 +351,8 @@ class FradsSimulation:
         # and the per-timestep injection are handled in the controller callback.
         self.cfs_thermal_models = {}   # window key -> CFSThermalModel (state persists across steps)
         for entry in model_setup.get("cfs_thermal_systems", []):
-            self.epmodel.add_other_equipment(
+            add_other_equipment(
+                self.epmodel,
                 name=entry["equipment_name"],
                 zone=entry["zone"],
                 fraction_radiant=entry.get("fraction_radiant", 0.6),
@@ -745,7 +750,10 @@ class FradsSimulation:
                 isinstance(v, dict) and "calculate_dgp" in v
                 for v in self.epsetup_config.values()
             )
-            self.epsetup.initialize_radiance(view_matrices=needs_view_matrices)
+            if needs_view_matrices:
+                self.epsetup.initialize_radiance(view_matrices=True)
+            else:
+                self.epsetup.initialize_radiance()
 
         # Set the simulation instance in the global context singleton
         context.simulation = self
@@ -1124,7 +1132,6 @@ def controller(state):
     for var_id, var_info in simulation.epsetup_config.items():
         if "cfs_thermal" not in var_info:
             continue
-        from frads.cfs_thermal import CFSThermalModel
         ct = var_info["cfs_thermal"]
         dt_s = float(zone_ts_hours) * 3600.0
         try:

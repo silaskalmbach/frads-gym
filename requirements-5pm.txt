@@ -1,0 +1,4 @@
+# Five-phase method (5PM), image-based DGP and the other extensions of the frads fork.
+# Replaces frads from PyPI:  pip install frads-gym && pip install -r requirements-5pm.txt
+frads @ git+https://github.com/silaskalmbach/frads@2ae22616eeaaae61d1946ab6af29075e41ead1e8
+filelock  # imported by the fork without being declared there
