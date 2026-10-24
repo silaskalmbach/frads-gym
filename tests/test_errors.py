@@ -76,3 +76,12 @@ def test_missing_energyplus_variable_fails_fast(tmp_path):
             env.step(np.array([0.0], dtype=np.float32))
     finally:
         env.close()
+
+
+def test_active_hours_missing_key_is_an_error():
+    from frads_gym.wrappers import ActiveHoursWrapper
+
+    wrapper = ActiveHoursWrapper.__new__(ActiveHoursWrapper)
+    wrapper.__dict__.update(check_solar=True, check_occupancy=False, mode="or", solar_keys=["dni"])
+    with pytest.raises(KeyError, match=r"raw_next_dni"):
+        wrapper._is_active({"raw_next_dhi": 1.0})

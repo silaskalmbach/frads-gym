@@ -43,8 +43,8 @@ def make_config(radiance=True):
                       "observation_space": {"low": 0, "high": 1}, "action_space": {"low": 0, "high": 1}},
         "outdoor_temp": variable("Site Outdoor Air Drybulb Temperature", "Environment", 40, -20),
         "indoor_temp": variable("Zone Mean Air Temperature", ZONE, 35, 15),
-        "direct_normal": variable("Site Direct Solar Radiation Rate per Area", "Environment", 1000),
-        "diffuse_horizontal": variable("Site Diffuse Solar Radiation Rate per Area", "Environment", 500),
+        "direct_normal_irradiance": variable("Site Direct Solar Radiation Rate per Area", "Environment", 1000),
+        "diffuse_horizontal_irradiance": variable("Site Diffuse Solar Radiation Rate per Area", "Environment", 500),
     }
     if radiance:
         # mean work-plane illuminance of the zone [lx], computed with the three-phase method
