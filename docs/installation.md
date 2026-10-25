@@ -16,6 +16,11 @@ This installs frads-gym together with everything it runs on:
 
 No engine has to be installed separately.
 
+The EnergyPlus version is fixed: frads requires `pyenergyplus-lbnl==25.2.0`, so EnergyPlus 25.2 is used
+even where newer versions exist. Building models must be EnergyPlus 25.2 IDF or epJSON files; frads converts
+the file format, not the version. Convert older models with the IDFVersionUpdater of a full EnergyPlus
+installation (it is not part of `pyenergyplus-lbnl`).
+
 ## Supported platforms
 
 Python 3.10, 3.11 and 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64); the test suite runs

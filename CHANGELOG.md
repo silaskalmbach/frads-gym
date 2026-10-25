@@ -44,6 +44,7 @@ are unchanged unless noted under "Changed".
 - `datetime` observation has six features (hour, day of year, day of week as sine and cosine).
 - HVAC energy variables are summed over the HVAC sub-steps of a zone timestep.
 - English messages and documentation throughout.
+- `pyenergyplus-lbnl` is pinned to 25.2.0, the version frads requires.
 
 ### Removed
 
