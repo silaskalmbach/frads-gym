@@ -27,13 +27,18 @@ def test_unset_or_zero_env_var_passes(upstream, value):
 
 def test_fork_env_var_raises(upstream):
     upstream.setenv("FRADS_USE_FIVE_PHASE", "1")
-    with pytest.raises(RuntimeError, match="FRADS_USE_FIVE_PHASE.*requirements-5pm.txt"):
+    with pytest.raises(RuntimeError, match="FRADS_USE_FIVE_PHASE.*Remove these settings"):
         w.check_frads_capabilities({})
 
 
 def test_calculate_dgp_raises(upstream):
     with pytest.raises(RuntimeError, match="glare: calculate_dgp"):
         w.check_frads_capabilities({"glare": {"calculate_dgp": {"zone": "z"}}})
+
+
+def test_cfs_thermal_raises(upstream):
+    with pytest.raises(RuntimeError, match="model_setup: cfs_thermal_systems, gain: cfs_thermal"):
+        w.check_frads_capabilities({"model_setup": {"cfs_thermal_systems": []}, "gain": {"cfs_thermal": {}}})
 
 
 def test_fork_allows_everything(upstream):

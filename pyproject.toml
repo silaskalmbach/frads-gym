@@ -7,7 +7,7 @@ packages = ["frads_gym"]
 
 [tool.hatch.build.targets.sdist]
 include = ["frads_gym", "tests", "examples", "docs", "mkdocs.yml", "README.md", "LICENSE", "CHANGELOG.md",
-           "CITATION.cff", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "requirements-5pm.txt"]
+           "CITATION.cff", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md"]
 
 [project]
 name = "frads-gym"

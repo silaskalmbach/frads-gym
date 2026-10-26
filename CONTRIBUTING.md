@@ -7,7 +7,7 @@ Thanks for helping with frads-gym. Bug reports, questions and pull requests are 
 
 Please include the frads-gym, frads and Python versions, your operating system, the full error message
 and, if possible, a configuration that reproduces it. `python -c "import frads, frads_gym; print(frads.__version__)"`
-prints the frads version; the fork reports a different set of features (see the documentation).
+prints the frads version.
 
 ## Development setup
 
@@ -18,8 +18,7 @@ pip install -e ".[test]"
 python -m pytest -m "not slow" tests
 ```
 
-`-m slow` runs the tests that start EnergyPlus and Radiance (a few minutes). To test against the frads
-fork, add `pip install -r requirements-5pm.txt`.
+`-m slow` runs the tests that start EnergyPlus and Radiance (a few minutes).
 
 The documentation is built with MkDocs:
 

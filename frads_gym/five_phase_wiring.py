@@ -1,7 +1,7 @@
 """Optional five-phase method (5PM) wiring, switched on by FRADS_USE_FIVE_PHASE=1.
 
 ``EnergyPlusSetup`` defaults to ``radiance_method="3phase"``, and frads-gym creates it without that
-argument. With the frads fork installed (requirements-5pm.txt) these patches let environment variables
+argument. With the frads fork installed these patches let environment variables
 select the five-phase method, its sun basis and the number of processes, so the same frads-gym code
 runs either method. Without ``FRADS_USE_FIVE_PHASE`` everything stays on the three-phase default.
 
@@ -33,13 +33,13 @@ def check_frads_capabilities(config: dict) -> None:
     if _FORK:
         return
     needs = [v for v in FORK_ENV_VARS if os.environ.get(v, "") not in ("", "0")]
-    needs += [f"{k}: calculate_dgp" for k, v in config.items() if isinstance(v, dict) and "calculate_dgp" in v]
+    needs += [f"{k}: {s}" for k, v in config.items() if isinstance(v, dict)
+              for s in ("calculate_dgp", "cfs_thermal", "cfs_thermal_systems") if s in v]
     if needs:
         import frads
         raise RuntimeError(
-            f"The installed frads {getattr(frads, '__version__', '?')} lacks the five-phase extensions "
-            f"needed by: {', '.join(needs)}. Install the fork with "
-            "`pip install -r requirements-5pm.txt` or remove these settings."
+            f"The installed frads {getattr(frads, '__version__', '?')} lacks the extensions "
+            f"needed by: {', '.join(needs)}. Remove these settings."
         )
 
 

@@ -35,21 +35,6 @@ python -c "import frads_gym; print(frads_gym.FradsEnv)"
 
 Then run the [Quickstart](quickstart.md).
 
-## Five-phase method and image-based DGP (frads fork)
-
-The released frads computes daylight with the three-phase method. The five-phase method, image-based
-DGP (`calculate_dgp`) and the related options ([Five-phase method](five-phase.md)) live in a fork of
-frads. Install it on top of frads-gym; it replaces frads from PyPI and needs `git`:
-
-```bash
-pip install frads-gym
-pip install -r requirements-5pm.txt
-```
-
-`requirements-5pm.txt` is in the repository root and pins the fork to a fixed commit. frads-gym checks
-which frads is installed: a configuration or environment variable that needs the fork raises an error
-with this command instead of being ignored.
-
 ## Development install
 
 ```bash

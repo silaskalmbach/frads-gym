@@ -35,7 +35,6 @@ import json
 import hashlib
 import numpy as np
 
-from frads_gym.cfs_thermal import CFSThermalModel, add_other_equipment
 from frads_gym.five_phase_wiring import check_frads_capabilities
 
 
@@ -340,8 +339,7 @@ class FradsSimulation:
         # and the per-timestep injection are handled in the controller callback.
         self.cfs_thermal_models = {}   # window key -> CFSThermalModel (state persists across steps)
         for entry in model_setup.get("cfs_thermal_systems", []):
-            add_other_equipment(
-                self.epmodel,
+            self.epmodel.add_other_equipment(
                 name=entry["equipment_name"],
                 zone=entry["zone"],
                 fraction_radiant=entry.get("fraction_radiant", 0.6),
@@ -1121,6 +1119,7 @@ def controller(state):
     for var_id, var_info in simulation.epsetup_config.items():
         if "cfs_thermal" not in var_info:
             continue
+        from frads.cfs_thermal import CFSThermalModel
         ct = var_info["cfs_thermal"]
         dt_s = float(zone_ts_hours) * 3600.0
         try:

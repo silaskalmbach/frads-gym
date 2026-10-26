@@ -14,9 +14,6 @@ PyPI is not touched by any workflow; uploads use `twine`.
 
 ## 1. Prepare (local)
 
-- [ ] The fork commit pinned in `requirements-5pm.txt` is on GitHub
-      (`gh api repos/silaskalmbach/frads/commits/<sha>`); push the fork branch first, otherwise the fork
-      jobs of the CI fail.
 - [ ] `main` is up to date and the CI and Docs workflows are green on it.
 - [ ] Version in `pyproject.toml` and `CITATION.cff` (`version`), and add `date-released: YYYY-MM-DD` to
       `CITATION.cff`.

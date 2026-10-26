@@ -8,39 +8,30 @@ on:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.frads }} frads
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]  # macos-latest runs on arm64
         python: ["3.10", "3.11", "3.12"]
-        frads: [pypi, fork]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
       - run: pip install ".[test]"
-      - if: matrix.frads == 'fork'
-        run: pip install -r requirements-5pm.txt
       - run: python -m pytest -m "not slow" tests
 
   simulation:
-    name: simulation tests / ${{ matrix.frads }} frads
+    name: simulation tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        frads: [pypi, fork]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install ".[test]"
-      - if: matrix.frads == 'fork'
-        run: pip install -r requirements-5pm.txt
       - run: python -m pytest -m slow tests
 
   package:

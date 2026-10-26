@@ -12,5 +12,5 @@ labels: bug
 
 **Versions**
 - frads-gym:
-- frads (`python -c "import frads; print(frads.__version__)"`), upstream or fork:
+- frads (`python -c "import frads; print(frads.__version__)"`):
 - Python and operating system:

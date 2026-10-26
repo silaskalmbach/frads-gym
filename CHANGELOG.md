@@ -12,20 +12,17 @@ are unchanged unless noted under "Changed".
 
 ### Added
 
-- Runs on frads from PyPI (`frads>=2.1.15,<2.2`). The five-phase method, image-based DGP and related
-  options come from the frads fork via `requirements-5pm.txt`; settings that need the fork raise an error
-  with upstream frads.
+- Runs on frads from PyPI (`frads>=2.1.15,<2.2`); settings that this frads does not support raise an
+  error instead of being ignored.
 - Configuration and argument checks at construction (`frads_gym.validation`), listing every problem.
 - Errors inside the EnergyPlus callback are raised in the main thread instead of being swallowed.
 - Self-contained examples (`make_glazing.py`, `quickstart.py`, `energyplus_only.py`, `train_ppo.py`)
   without downloaded data.
 - Documentation (MkDocs) with a configuration reference; CI on Linux, Windows and macOS with
-  Python 3.10–3.12 and both frads variants.
+  Python 3.10–3.12.
 - Fixed Radiance matrix sets for bit-for-bit repeatable runs (`model_setup.fixed_matrices`,
   `FRADS_MATRIX_DIR`, `FRADS_MATRIX_WRITE=1` writes the set and its manifest).
-- `cfs_thermal` entries: a transient thermal model of absorbing glazing that injects the delayed solar
-  gain (`frads_gym.cfs_thermal`, moved from the frads fork).
-- `calculate_dgp` entries (frads fork), per-sensor `calibration`, custom sensor and view positions.
+- Per-sensor `calibration`, custom sensor and view positions.
 - Wrappers: `ActionRepeatWrapper`, `ActiveHoursWrapper`, `SolarForecastWrapper`, `TemporalHistoryWrapper`.
 - Options `sync_first_action`, `truncate_month_only`, `weekday_from_ep`, `staggered_start` with
   `env_id`/`n_envs`, `run_periods` per weather file, `normalizer_state_dir`; all off by default.
@@ -37,8 +34,8 @@ are unchanged unless noted under "Changed".
 - `output_dir`, `weather_files_path` and `reward_function` are required; there is no San Francisco
   weather default and no output in the package directory.
 - No silent fallbacks: a missing `model_path` no longer falls back to `model_type`, missing glazing files,
-  missing EnergyPlus variables, failed illuminance or glare calculations, failed `cfs_thermal` steps and
-  unknown `ActiveHoursWrapper` keys raise instead of reporting 0 or −1.
+  missing EnergyPlus variables, failed illuminance or glare calculations and unknown `ActiveHoursWrapper`
+  keys raise instead of reporting 0 or −1.
 - The action vector follows the config order of the `actuate_cfs_state` entries (it was sorted by name,
   while actuation used config order). Configurations with one controlled window are unaffected.
 - `datetime` observation has six features (hour, day of year, day of week as sine and cosine).

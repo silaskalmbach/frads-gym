@@ -21,15 +21,3 @@
 ::: frads_gym.validation
     options:
       members: [ConfigError, validate_config, validate_env_args]
-
-## Transient glazing model
-
-::: frads_gym.cfs_thermal
-    options:
-      members: [CFSThermalModel, add_other_equipment, PaneThermalProps, GapThermalProps, StepResult]
-
-## frads capabilities
-
-::: frads_gym.five_phase_wiring
-    options:
-      members: [check_frads_capabilities, FORK_ENV_VARS]

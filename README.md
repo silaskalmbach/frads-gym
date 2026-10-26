@@ -26,8 +26,7 @@ facades, such as electrochromic glazing, with reinforcement learning. It couples
 pip install frads-gym
 ```
 
-Python 3.10 to 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64). The five-phase method and
-image-based DGP need the frads fork: `pip install -r requirements-5pm.txt`
+Python 3.10 to 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64)
 (see [Installation](https://silaskalmbach.github.io/frads-gym/installation/)).
 
 ## Quickstart

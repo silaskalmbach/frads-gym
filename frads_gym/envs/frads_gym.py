@@ -83,8 +83,7 @@ class FradsEnv(gym.Env):
         Raises:
             frads_gym.validation.ConfigError: The configuration or an argument is invalid; the
                 message lists every problem.
-            RuntimeError: The configuration needs features of the frads fork that the installed
-                frads lacks.
+            RuntimeError: The configuration needs features that the installed frads lacks.
         """
         self.render_mode = render_mode
         self.config_file = config_file
