@@ -6,6 +6,9 @@
 
 [![CI](https://github.com/silaskalmbach/frads-gym/actions/workflows/ci.yml/badge.svg)](https://github.com/silaskalmbach/frads-gym/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18504304.svg)](https://doi.org/10.5281/zenodo.18504304)
+[![Docs](https://img.shields.io/badge/docs-silaskalmbach.github.io-blue)](https://silaskalmbach.github.io/frads-gym/)
+
+**Documentation: <https://silaskalmbach.github.io/frads-gym/>**
 
 `frads-gym` is a [Gymnasium](https://gymnasium.farama.org/) environment for controlling switchable
 facades, such as electrochromic glazing, with reinforcement learning. It couples
@@ -26,8 +29,8 @@ facades, such as electrochromic glazing, with reinforcement learning. It couples
 pip install frads-gym
 ```
 
-Python 3.10 to 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64)
-(see [Installation](https://silaskalmbach.github.io/frads-gym/installation/)).
+Python 3.10 to 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64). Details and the development
+install: [Installation](https://silaskalmbach.github.io/frads-gym/installation/).
 
 ## Quickstart
 
@@ -43,6 +46,7 @@ python quickstart.py
 ```python
 from frads_gym import FradsEnv
 
+# config: path to a JSON configuration or a dict (quickstart.py builds one); epw: path to a weather file
 env = FradsEnv(output_dir="output", config_file=config, weather_files_path=[epw],
                reward_function=lambda obs, action, next_obs, info: 0.0,
                number_of_timesteps_per_hour=4)
@@ -51,10 +55,23 @@ obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 env.close()
 ```
 
+The other examples (EnergyPlus without Radiance, the wiring for PPO with stable-baselines3) are listed
+in [Quickstart](https://silaskalmbach.github.io/frads-gym/quickstart/).
+
 ## Documentation
 
-https://silaskalmbach.github.io/frads-gym/: installation, how the co-simulation works, the full
-configuration reference, wrappers and the API.
+<https://silaskalmbach.github.io/frads-gym/>
+
+- [How it works](https://silaskalmbach.github.io/frads-gym/how-it-works/): the co-simulation loop, timing of
+  actions and observations, episodes, reproducibility
+- [Configuration](https://silaskalmbach.github.io/frads-gym/configuration/): every key of the JSON configuration
+- [Wrappers](https://silaskalmbach.github.io/frads-gym/wrappers/) and
+  [API reference](https://silaskalmbach.github.io/frads-gym/api/)
+
+## Contributing
+
+Bug reports, questions and pull requests are welcome, see
+[CONTRIBUTING.md](https://github.com/silaskalmbach/frads-gym/blob/main/CONTRIBUTING.md).
 
 ## Citation
 

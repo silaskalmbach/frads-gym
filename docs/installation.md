@@ -23,8 +23,8 @@ installation (it is not part of `pyenergyplus-lbnl`).
 
 ## Supported platforms
 
-Python 3.10, 3.11 and 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64); the test suite runs
-on all nine combinations. Python 3.13 is not supported yet because `pywincalc` publishes no wheels for
+Python 3.10, 3.11 and 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64). The unit tests run on
+all nine combinations, the simulation tests (EnergyPlus and Radiance) on Linux. Python 3.13 is not supported yet because `pywincalc` publishes no wheels for
 it.
 
 To check the installation:

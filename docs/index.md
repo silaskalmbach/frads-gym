@@ -17,7 +17,7 @@ timestep.
 - **Configuration instead of code.** Observations, actions and their normalisation are declared in one
   JSON document: EnergyPlus output variables, the current glazing state, work-plane or point
   illuminance (three-phase method), enhanced simplified DGP, daylight-dimmed lighting energy, energy
-  sums and allocations, and a transient thermal model of absorbing glazing. See
+  sums and allocations. See
   [Configuration](configuration.md).
 - **Built for training.** Per-observation normalisation (static, windowed percentile, Welford, windowed
   and EMA z-score), episodes that end at day or month boundaries without restarting EnergyPlus,
