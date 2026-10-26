@@ -41,6 +41,16 @@ def test_cfs_thermal_raises(upstream):
         w.check_frads_capabilities({"model_setup": {"cfs_thermal_systems": []}, "gain": {"cfs_thermal": {}}})
 
 
+def test_zero_scale_raises(upstream):
+    upstream.setenv("SKY_SCALE", "0")  # removes the sky in the fork, so it is a setting, not "off"
+    with pytest.raises(RuntimeError, match="SKY_SCALE"):
+        w.check_frads_capabilities({})
+
+
+def test_comment_entries_are_ignored(upstream):
+    w.check_frads_capabilities({"_old": {"calculate_dgp": {"zone": "z"}}})
+
+
 def test_fork_allows_everything(upstream):
     upstream.setattr(w, "_FORK", True)
     upstream.setenv("FRADS_USE_FIVE_PHASE", "1")

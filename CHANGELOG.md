@@ -54,6 +54,9 @@ are unchanged unless noted under "Changed".
 - Deadlocks and hangs at EnergyPlus teardown and after step timeouts.
 - Observation shapes with several parallel environments; element-wise standardisation of array
   observations.
+- Several `calculate_edgps` entries with different views in one zone are an error; the last view used to
+  replace the others silently.
+- Entries whose key starts with `_` are ignored at runtime too, as documented.
 
 ## [0.1.1] - 2026-02-06
 

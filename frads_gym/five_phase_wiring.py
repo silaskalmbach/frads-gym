@@ -26,14 +26,18 @@ FORK_ENV_VARS = (
     "FRADS_ABSDF_XML_DIR", "FRADS_TT_XML_DIR", "FRADS_HYBRID_DIRECT", "FRADS_SKIP_ABSDF_SENSOR_SUN",
     "FRADS_BLACKED_OCTREE_MODIFIER", "FRADS_SKY_ROTATION", "FRADS_FASSADE",
 )
+FORK_SWITCHES = {"FRADS_USE_FIVE_PHASE", "FRADS_USE_ABSDF", "FRADS_USE_TT_T", "FRADS_HYBRID_DIRECT",
+                 "FRADS_SKIP_ABSDF_SENSOR_SUN"}
 
 
 def check_frads_capabilities(config: dict) -> None:
     """Raise if *config* or the environment needs features that only the frads fork provides."""
     if _FORK:
         return
-    needs = [v for v in FORK_ENV_VARS if os.environ.get(v, "") not in ("", "0")]
-    needs += [f"{k}: {s}" for k, v in config.items() if isinstance(v, dict)
+    # "0" switches off only the on/off switches; for the other variables (e.g. SKY_SCALE=0) it is a value
+    needs = [v for v in FORK_ENV_VARS
+             if os.environ.get(v, "") not in (("", "0") if v in FORK_SWITCHES else ("",))]
+    needs += [f"{k}: {s}" for k, v in config.items() if isinstance(v, dict) and not k.startswith("_")
               for s in ("calculate_dgp", "cfs_thermal", "cfs_thermal_systems") if s in v]
     if needs:
         import frads

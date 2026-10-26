@@ -139,8 +139,9 @@ class FradsEnv(gym.Env):
 
         validate_config(loaded_config)
         if loaded_config:
-            # Filter out inactive entries
-            self.epsetup_config = {k: v for k, v in loaded_config.items() if isinstance(v, dict) and v.get("active", True)}
+            # Filter out inactive entries and '_' comments
+            self.epsetup_config = {k: v for k, v in loaded_config.items()
+                                   if isinstance(v, dict) and v.get("active", True) and not k.startswith("_")}
             print(f"Loaded {len(loaded_config)} config entries, kept {len(self.epsetup_config)} active entries")
 
         # Expose effective per-sensor calibration factors to reward functions

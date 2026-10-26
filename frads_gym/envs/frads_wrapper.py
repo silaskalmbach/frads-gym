@@ -237,8 +237,9 @@ class FradsSimulation:
                 os.makedirs(output_dir, exist_ok=True)
             self.output_dir = output_dir
 
-        # Filter out inactive entries
-        self.epsetup_config = {k: v for k, v in loaded_config.items() if isinstance(v, dict) and v.get("active", True)}
+        # Filter out inactive entries and '_' comments
+        self.epsetup_config = {k: v for k, v in loaded_config.items()
+                               if isinstance(v, dict) and v.get("active", True) and not k.startswith("_")}
         print(f"Loaded {len(loaded_config)} config entries, kept {len(self.epsetup_config)} active entries")
         
         os.chdir(self.output_dir) # change chdir to output dir
@@ -329,10 +330,12 @@ class FradsSimulation:
             print(f"Added glazing system from {gs_path}")
 
         states = [s["name"] for s in self.epsetup_config.get("facade_state_mapping", {}).get("states", [])]
-        unknown = [s for s in states if s not in self.glazing_systems]
+        # states may also be complex fenestration constructions that the model itself defines
+        known = set(self.glazing_systems) | set(self.epmodel.construction_complex_fenestration_state or {})
+        unknown = [s for s in states if s not in known]
         if unknown:
             raise ValueError(f"facade_state_mapping names {unknown} match no glazing system "
-                             f"(loaded: {sorted(self.glazing_systems)})")
+                             f"or complex fenestration construction (known: {sorted(known)})")
 
         # Configure CFS transient thermal systems (delayed absorbed-solar gain).
         # Declares one OtherEquipment object per entry; the per-window RC models
