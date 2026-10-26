@@ -34,7 +34,7 @@ class ActiveHoursWrapper(gym.Wrapper):
             timesteps.  ``None`` (default) keeps the legacy behaviour: hold
             the agent's last action (zeros before the first agent step).
             A float is broadcast to the full action shape, e.g. ``0.0`` =
-            all panes fully tinted under the FTG ``facade_state_mapping``.
+            the first state of ``facade_state_mapping`` for every window.
     """
 
     def __init__(
@@ -130,6 +130,14 @@ class ActiveHoursWrapper(gym.Wrapper):
     # Internal
     # ------------------------------------------------------------------
 
+    def _value(self, info: dict, key: str) -> float:
+        """raw_next_<key> from info; a missing key is a configuration error, not 0."""
+        try:
+            return self._to_scalar(info[f"raw_next_{key}"])
+        except KeyError:
+            raise KeyError(f"ActiveHoursWrapper needs info['raw_next_{key}']: add a config entry "
+                           f"'{key}' or pass solar_keys / occupancy_key") from None
+
     @staticmethod
     def _to_scalar(value) -> float:
         """Convert a scalar, 0-d array, or 1-element array to float."""
@@ -141,14 +149,11 @@ class ActiveHoursWrapper(gym.Wrapper):
         conditions = []
 
         if self.check_solar:
-            ghi = sum(
-                self._to_scalar(info.get(f"raw_next_{k}", 0))
-                for k in self.solar_keys
-            )
+            ghi = sum(self._value(info, k) for k in self.solar_keys)
             conditions.append(ghi > 0)
 
         if self.check_occupancy:
-            occ = self._to_scalar(info.get(f"raw_next_{self.occupancy_key}", 0))
+            occ = self._value(info, self.occupancy_key)
             conditions.append(occ > 0)
 
         if not conditions:

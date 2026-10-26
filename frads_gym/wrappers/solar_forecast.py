@@ -111,7 +111,7 @@ class SolarForecastWrapper(gym.Wrapper):
         """Derive the timestep length from the env's actual timestep count.
 
         FradsEnv exposes ``number_of_timesteps_per_hour`` in info; using it keeps
-        the forecast horizon in wall-clock terms correct (e.g. FTG 12/h = 5 min,
+        the forecast horizon in wall-clock terms correct (e.g. 12/h = 5 min,
         not the 15-min default).  Falls back to 15 min if absent/invalid.
         """
         n = info.get("number_of_timesteps_per_hour")

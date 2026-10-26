@@ -1,115 +1,84 @@
 <p align="center">
-  <img src="frads_gym_logo.png" alt="frads-gym logo" width="200"/>
+  <img src="https://raw.githubusercontent.com/silaskalmbach/frads-gym/main/docs/assets/logo.png" alt="frads-gym logo" width="200"/>
 </p>
 
 # frads-gym
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18504305.svg)](https://doi.org/10.5281/zenodo.18504305)
 
-`frads-gym` is a Gymnasium environment built on the co-simulation of **EnergyPlus** and **Radiance** via [frads](https://github.com/LBNL-ETA/frads). The goal was to enable the control of switchable glazing using Reinforcement Learning (RL), considering thermal and high-resolution daylight influences. Electrochromic glazing is used as an example and can be found in the `examples/` folder.
+[![CI](https://github.com/silaskalmbach/frads-gym/actions/workflows/ci.yml/badge.svg)](https://github.com/silaskalmbach/frads-gym/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18504304.svg)](https://doi.org/10.5281/zenodo.18504304)
+[![Docs](https://img.shields.io/badge/docs-silaskalmbach.github.io-blue)](https://silaskalmbach.github.io/frads-gym/)
 
-## Features
+**Documentation: <https://silaskalmbach.github.io/frads-gym/>**
 
-- **Coupled Simulation**: Combines EnergyPlus thermal simulation with Radiance lighting simulation
-- **Facade Control**: Control electrochromic glazing states, enabling smart facade optimization
-- **Lighting Metrics**: Capture lighting performance metrics including:
-  - **eDGP** (Enhanced Daylight Glare Probability)
-  - **WPI** (Workplane Illuminance)
-- **Energy Optimization**: Monitor and optimize cooling, heating, and lighting energy
-- **Gymnasium Compatible**: Full compatibility with stable-baselines3, RLlib, and other RL frameworks
+`frads-gym` is a [Gymnasium](https://gymnasium.farama.org/) environment for controlling switchable
+facades, such as electrochromic glazing, with reinforcement learning. It couples
+[EnergyPlus](https://energyplus.net/) (thermal and energy simulation) and
+[Radiance](https://www.radiance-online.org/) (daylight and glare) through
+[frads](https://github.com/LBNL-ETA/frads) and hands control to the agent at every EnergyPlus timestep.
+
+- One `step()` per EnergyPlus zone timestep; the action sets the glazing state of each controlled window.
+- Observations from a JSON configuration: any EnergyPlus output variable, work-plane or sensor
+  illuminance, enhanced simplified DGP, daylight-dimmed lighting energy, energy sums and more.
+- Per-observation normalisation (static, dynamic percentile, z-score, EMA), episodes per day or month,
+  wrappers for action repeat, active hours, solar forecast and observation history.
+- `pip install` brings EnergyPlus and Radiance along; nothing has to be installed by hand.
 
 ## Installation
 
-### From Source (Development)
+```bash
+pip install frads-gym
+```
+
+Python 3.10 to 3.12 on Linux (x86_64), Windows (x86_64) and macOS (arm64). Details and the development
+install: [Installation](https://silaskalmbach.github.io/frads-gym/installation/).
+
+## Quickstart
 
 ```bash
 git clone https://github.com/silaskalmbach/frads-gym.git
-cd frads-gym
-pip install -e .
+cd frads-gym/examples
+python quickstart.py
 ```
 
-## Usage
+`quickstart.py` simulates one June day in the DOE medium office with Chicago weather (both ship with
+`pyenergyplus`) and four synthetic electrochromic states created by `make_glazing.py`. The core of it:
 
 ```python
-import json
 from frads_gym import FradsEnv
 
-# Define a simple reward function
-def reward_function(state, action, next_state, info):
-    energy = info.get('raw_next_total_energy_demand_1', [0.0])[0]
-    return -energy  # Minimize energy consumption
-
-# Load configuration
-with open('path/to/config.json', 'r') as f:
-    config = json.load(f)
-config['config_dir'] = 'path/to/config/directory'
-
-# Create the environment
-env = FradsEnv(
-    output_dir='./simulation_output',
-    config_file=config,
-    weather_files_path=['path/to/weather.epw'],
-    reward_function=reward_function,
-    enable_radiance=True  # Enable lighting simulation
-)
-
-# Standard Gymnasium loop
+# config: path to a JSON configuration or a dict (quickstart.py builds one); epw: path to a weather file
+env = FradsEnv(output_dir="output", config_file=config, weather_files_path=[epw],
+               reward_function=lambda obs, action, next_obs, info: 0.0,
+               number_of_timesteps_per_hour=4)
 obs, info = env.reset()
-for _ in range(100):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-    if terminated or truncated:
-        obs, info = env.reset()
-
+obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 env.close()
 ```
 
-See `examples/` for a complete example with electrochromic glazing control.
+The other examples (EnergyPlus without Radiance, the wiring for PPO with stable-baselines3) are listed
+in [Quickstart](https://silaskalmbach.github.io/frads-gym/quickstart/).
 
-## Configuration
+## Documentation
 
-The environment requires a JSON configuration file specifying:
-- EnergyPlus model path (`.idf` file)
-- Glazing system definitions (for Radiance)
-- Weather file path (`.epw` file)
-- Observation and action space definitions
-- Facade state mappings
+<https://silaskalmbach.github.io/frads-gym/>
 
-See the `examples/data/` directory for example configurations.
+- [How it works](https://silaskalmbach.github.io/frads-gym/how-it-works/): the co-simulation loop, timing of
+  actions and observations, episodes, reproducibility
+- [Configuration](https://silaskalmbach.github.io/frads-gym/configuration/): every key of the JSON configuration
+- [Wrappers](https://silaskalmbach.github.io/frads-gym/wrappers/) and
+  [API reference](https://silaskalmbach.github.io/frads-gym/api/)
 
-## Dependencies
+## Contributing
 
-`pip install -e .` resolves everything below. **No engine has to be installed by hand** —
-the EnergyPlus and Radiance binaries ship as PyPI wheels.
-
-Declared in `pyproject.toml`:
-
-- [`gymnasium`](https://gymnasium.farama.org/) `>=1.0.0` - RL environment API
-- `pandas` `>=2.0.0`
-- `pyenergyplus-lbnl` `>=25.2.0` - the [EnergyPlus](https://energyplus.net/) runtime + Python API, packaged by LBNL
-- [`frads`](https://github.com/LBNL-ETA/frads) `>=2.0.0` - Framework for Radiance Simulation
-
-Pulled in transitively by `frads`:
-
-- `pyradiance` - the [Radiance](https://www.radiance-online.org/) binaries
-- `numpy`, `scipy`, `pywincalc`
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
+Bug reports, questions and pull requests are welcome, see
+[CONTRIBUTING.md](https://github.com/silaskalmbach/frads-gym/blob/main/CONTRIBUTING.md).
 
 ## Citation
 
-If you use this software in your research, please cite it using the following BibTeX entry:
+Please cite the archived release you used; the concept DOI
+[10.5281/zenodo.18504304](https://doi.org/10.5281/zenodo.18504304) always resolves to the latest
+version. `CITATION.cff` holds the metadata.
 
-```bibtex
-@software{kalmbachFradsGym2026,
-  author = {Kalmbach, Silas},
-  doi = {10.5281/zenodo.18504305},
-  month = {2},
-  title = {{frads-gym: A Gymnasium environment for EnergyPlus and Radiance based building control}},
-  url = {https://github.com/silaskalmbach/frads-gym},
-  version = {0.1.1},
-  year = {2026}
-}
-```
+## License
+
+MIT, see [LICENSE](https://github.com/silaskalmbach/frads-gym/blob/main/LICENSE).

@@ -20,10 +20,10 @@ License: MIT
 import frads as fr
 from frads.methods import SensorConfig, ViewConfig
 import pyradiance as pr
-from pyenergyplus.dataset import ref_models, weather_files
+from pyenergyplus.dataset import ref_models
 import os
 import sys
-from epmodel import epmodel as epm
+from pyenergyplus.model import model as epm
 import threading
 import queue
 import time
@@ -32,13 +32,10 @@ import shutil
 from pathlib import Path
 import json
 
-# Add rl/subroutines to path for shared utilities
-_subroutines_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'rl', 'subroutines'))
-if _subroutines_path not in sys.path:
-    sys.path.append(_subroutines_path)
-from radiance_utils import apply_custom_radiance_config
 import hashlib
 import numpy as np
+
+from frads_gym.five_phase_wiring import check_frads_capabilities
 
 
 def file_sha256(path):
@@ -50,11 +47,11 @@ def file_sha256(path):
 
 
 def sensor_digest(wf):
-    """Pruefsumme der Sensoren eines Radiance-Workflows fuer feste Matrizen.
+    """Checksum of the sensors of a Radiance workflow, used to match fixed matrices.
 
-    ponytail: Positionen auf 0,1 mm gerundet (+0.0 gegen -0.0), damit Linux und Windows denselben
-    Wert liefern; Aenderungen am Radiance-Modell ausser Sensoren und Gebaeudemodell (z. B. andere
-    CFS-Fenstergruppen in der Config) erkennt die Pruefung nicht.
+    ponytail: positions rounded to 0.1 mm (+0.0 against -0.0) so Linux and Windows agree; changes
+    of the Radiance model other than sensors and building model (e.g. other CFS window groups in
+    the config) go unnoticed.
     """
     sensors = {
         name: (np.round(np.asarray(cfg.data, dtype=float), 4) + 0.0).tolist() if cfg.data
@@ -62,6 +59,75 @@ def sensor_digest(wf):
         for name, cfg in sorted(wf.config.model.sensors.items())
     }
     return hashlib.sha256(json.dumps(sensors, sort_keys=True).encode()).hexdigest()
+
+def apply_custom_radiance_config(epsetup, epsetup_config: dict) -> set[str]:
+    """Apply custom sensor/view positions from *epsetup_config* to *epsetup*.
+
+    Reads optional ``sensor_position``/``sensor_direction`` from
+    ``calculate_illuminance`` entries and ``view_position``/``view_direction``
+    from ``calculate_edgps`` entries.  When present, overrides the
+    auto-generated sensor/view with user-defined placement.
+
+    After modifying rconfigs, affected zone workflows are recreated so that
+    ThreePhaseMethod picks up the new sensor/view senders.
+
+    Returns:
+        Set of zone names whose workflows were recreated.
+    """
+    modified_zones: set[str] = set()
+
+    for var_id, var_info in epsetup_config.items():
+        if not isinstance(var_info, dict):
+            continue
+
+        # Custom illuminance sensor placement
+        if "calculate_illuminance" in var_info:
+            illum_cfg = var_info["calculate_illuminance"]
+            if "sensor_position" in illum_cfg and "sensor_direction" in illum_cfg:
+                zone = illum_cfg["zone"]
+                pos = illum_cfg["sensor_position"]
+                dir_ = illum_cfg["sensor_direction"]
+                sensor_data = [pos + dir_]  # [x, y, z, dx, dy, dz]
+                # Add as a NEW sensor keyed by var_id so it doesn't
+                # overwrite the default WPI grid sensor.
+                epsetup.rconfigs[zone].model.sensors[var_id] = SensorConfig(data=sensor_data)
+                modified_zones.add(zone)
+                print(f"Custom illuminance sensor '{var_id}' at {pos} dir {dir_} in zone '{zone}'")
+
+        # Custom eDGP view/sensor placement
+        if "calculate_edgps" in var_info:
+            edgp_cfg = var_info["calculate_edgps"]
+            if "view_position" in edgp_cfg and "view_direction" in edgp_cfg:
+                zone = edgp_cfg["zone"]
+                pos = edgp_cfg["view_position"]
+                dir_ = edgp_cfg["view_direction"]
+
+                first_view_key = next(iter(epsetup.rconfigs[zone].model.views.keys()))
+                view = pr.create_default_view()
+                view.vp = tuple(pos)
+                view.vdir = tuple(dir_)
+                view.type = "a"
+                view.horiz = 180
+                view.vert = 180
+                epsetup.rconfigs[zone].model.views[first_view_key] = ViewConfig(view=view)
+
+                sensor_data = [pos + dir_]
+                epsetup.rconfigs[zone].model.sensors[first_view_key] = SensorConfig(data=sensor_data)
+                modified_zones.add(zone)
+                print(f"Custom eDGP view (replaced '{first_view_key}') at {pos} dir {dir_} in zone '{zone}'")
+
+    # Recreate workflows for modified zones so the original PhaseMethod picks
+    # up new senders. Preserve the workflow class chosen at
+    # ``EnergyPlusSetup(radiance_method=...)`` (default 3PM, optionally 5PM).
+    # Earlier versions hard-coded ``fr.ThreePhaseMethod`` here, which silently
+    # downgraded any 5PM setup back to 3PM — see PR/issue tracker.
+    for zone in modified_zones:
+        epsetup.rconfigs[zone].settings.overwrite = True
+        workflow_cls = type(epsetup.rworkflows[zone])
+        epsetup.rworkflows[zone] = workflow_cls(epsetup.rconfigs[zone])
+
+    return modified_zones
+
 
 # settings = fr.Settings()
 # settings.num_processors = 4
@@ -101,16 +167,15 @@ class FradsSimulation:
         Initialize the EnergyPlus simulation.
         
         Args:
-            output_dir (str, optional): Directory where simulation will store output files.
-                                        If None, uses the directory where the script is located.
-            config_file (str or dict, optional): Path to the configuration file OR a dictionary containing configuration. 
-                                                 If None, uses "epsetup_config.json" in the script directory.
+            output_dir (str): Directory where the simulation stores its output files. Required.
+            config_file (str or dict): Path to the configuration file or the configuration as a dict.
+                Required. Relative paths in a dict resolve against its 'config_dir' key.
             run_annual (bool): If True, run the simulation in annual mode.
             cleanup (bool): If True, remove existing output directory before starting the simulation.
             run_period (dict, optional): Dictionary specifying the run period for the simulation.
                                         Example: {"begin_year": 2002, "begin_month": 1, "begin_day": 1, "end_year": 2002, "end_month": 12, "end_day": 31}
             treat_weather_as_actual (bool): If True, treat weather data as actual.
-            weather_files_path (str, optional): Path to the weather files directory. ["weather_file1.epw", "weather_file2.epw"]
+            weather_files_path (list): EPW files, e.g. ["weather_file1.epw", "weather_file2.epw"]. Required.
             number_of_timesteps_per_hour (int): Number of timesteps per hour for the simulation.
             staggered_start (bool): If True, stagger the start month deterministically based on env_id and reset count.
             env_id (int): The ID of the environment, used for staggering start months to decorrelate training data.
@@ -127,7 +192,7 @@ class FradsSimulation:
         self.run_periods=run_periods  # List of dicts parallel to weather_files_path
         self.current_weather_idx = 0
         self.staggered_start = staggered_start
-        self.weekday_from_ep = weekday_from_ep  # Wochentag aus EnergyPlus in die Beobachtung
+        self.weekday_from_ep = weekday_from_ep  # weekday from EnergyPlus into the observation
         self.env_id = env_id
         self.n_envs = n_envs
         self.reset_count = 0
@@ -135,6 +200,7 @@ class FradsSimulation:
         self.enable_radiance = enable_radiance
         self.config_file = config_file
         self.simulation_finished = False
+        self.callback_error = None  # exception raised in the EnergyPlus callback, re-raised by steps()
 
         loaded_config = {}
 
@@ -155,21 +221,16 @@ class FradsSimulation:
             elif isinstance(config_file, dict):
                 # It is already a json object (dict)
                 loaded_config = config_file
-                # Try to retrieve input_dir from injected key
+                # Relative paths in a dict config resolve against config_dir; without it they are an error
                 self.input_dir = loaded_config.get('config_dir')
-                
-                if self.input_dir is None:
-                    # Fallback if not present
-                    self.input_dir = os.path.dirname(os.path.abspath(__file__))
             else:
                  raise ValueError("config_file must be a string path or a dictionary key-value map.")
         else:
-            # Use the script directory as input directory
-            self.input_dir = os.path.dirname(os.path.abspath(__file__))
-        
+            raise ValueError("config_file is required (a path to a JSON file or a dict)")
+
         # Set the working directory for simulation outputs
         if output_dir is None:
-            self.output_dir = self.input_dir
+            raise ValueError("output_dir is required")
         else:
             # Create the directory if it doesn't exist
             if not os.path.exists(output_dir):
@@ -200,8 +261,17 @@ class FradsSimulation:
         self.simulation_lock = threading.RLock()        # Reentrant lock for thread-safe operations
 
         # Initialize the simulation environment
+        check_frads_capabilities(self.epsetup_config)
         self._model_setup()
         self._simulation_config()
+
+    def _resolve(self, path):
+        """Absolute path for a path from the config; relative ones resolve against the config directory."""
+        if os.path.isabs(path):
+            return path
+        if self.input_dir is None:
+            raise ValueError(f"Relative path '{path}' needs 'config_dir' in the config dict, or use absolute paths")
+        return os.path.join(self.input_dir, path)
 
     def _model_setup(self):
         """
@@ -214,30 +284,16 @@ class FradsSimulation:
         # Try to get model path or type
         model_path = model_setup.get("model_path")
         model_type = model_setup.get("model_type")
-        self.model_file = None  # geladene Modelldatei, Schluessel fuer feste Matrizen
+        self.model_file = None  # loaded model file, key of the fixed matrix set
         
         # Load model based on available configuration
         if model_path:
-            # Check if path is absolute or relative
-            if os.path.isabs(model_path):
-                full_model_path = model_path
-            else:
-                # Resolve relative path using input_dir
-                full_model_path = os.path.join(self.input_dir, model_path)
-            
-            # Check if the model file exists
-            if os.path.exists(full_model_path):
-                print(f"Loading model from path: {full_model_path}")
-                self.epmodel = fr.load_energyplus_model(full_model_path)
-                self.model_file = full_model_path
-            else:
-                print(f"Warning: Model path not found: {full_model_path}")
-                if model_type and model_type in ref_models:
-                    print(f"Falling back to model type: {model_type}")
-                    self.epmodel = fr.load_energyplus_model(ref_models[model_type])
-                else:
-                    available_models = list(ref_models.keys())
-                    raise ValueError(f"Invalid model_path and no valid model_type. Available model types: {available_models}")
+            full_model_path = self._resolve(model_path)
+            if not os.path.exists(full_model_path):
+                raise FileNotFoundError(f"model_setup.model_path not found: {full_model_path}")
+            print(f"Loading model from path: {full_model_path}")
+            self.epmodel = fr.load_energyplus_model(full_model_path)
+            self.model_file = full_model_path
         elif model_type and model_type in ref_models:
             print(f"Loading model by type: {model_type}")
             self.epmodel = fr.load_energyplus_model(ref_models[model_type])
@@ -260,15 +316,9 @@ class FradsSimulation:
         # solar absorptances are available at runtime (e.g. for cfs_thermal).
         self.glazing_systems = {}
         for glazing in model_setup.get("glazing_systems", []):
-            # Check if path is absolute or relative
-            if os.path.isabs(glazing["file"]):
-                gs_path = glazing["file"]
-            else:
-                gs_path = os.path.join(self.input_dir, glazing["file"])
-
+            gs_path = self._resolve(glazing["file"])
             if not os.path.exists(gs_path):
-                print(f"Warning: Glazing system file not found: {gs_path}")
-                continue
+                raise FileNotFoundError(f"Glazing system file not found: {gs_path}")
 
             # Load and add glazing system
             # gs = fr.GlazingSystem.from_json(gs_path) # frads version V1
@@ -277,6 +327,12 @@ class FradsSimulation:
             self.glazing_systems[gs.name] = gs
 
             print(f"Added glazing system from {gs_path}")
+
+        states = [s["name"] for s in self.epsetup_config.get("facade_state_mapping", {}).get("states", [])]
+        unknown = [s for s in states if s not in self.glazing_systems]
+        if unknown:
+            raise ValueError(f"facade_state_mapping names {unknown} match no glazing system "
+                             f"(loaded: {sorted(self.glazing_systems)})")
 
         # Configure CFS transient thermal systems (delayed absorbed-solar gain).
         # Declares one OtherEquipment object per entry; the per-window RC models
@@ -383,7 +439,7 @@ class FradsSimulation:
         # and the background thread can be joined BEFORE the caller's
         # epsetup.close() -> api.state_manager.delete_state(). Calling
         # delete_state() while that run() thread is still live blocks the main
-        # thread forever in a futex (observed 2026-06-06 deadlock at 99.1%).
+        # thread forever in a futex (observed as a deadlock).
         if hasattr(self, 'epsetup'):
             try:
                 self.epsetup.api.runtime.stop_simulation(self.epsetup.state)
@@ -435,32 +491,32 @@ class FradsSimulation:
     def _apply_custom_radiance_config(self):
         """Apply custom sensor/view positions from epsetup_config to Radiance rconfigs.
 
-        Delegates to the shared utility in radiance_utils.py so that
-        MatricesManager can reuse the same logic during matrix regeneration.
+        Delegates to the module-level apply_custom_radiance_config so that
+        callers outside the environment (e.g. matrix regeneration) can reuse it.
         """
         apply_custom_radiance_config(self.epsetup, self.epsetup_config)
 
     def _use_fixed_matrices(self, root):
-        """Feste Radiance-Matrizen (Config model_setup.fixed_matrices oder FRADS_MATRIX_DIR, seit 22.10.2026).
+        """Fixed Radiance matrices (config model_setup.fixed_matrices or FRADS_MATRIX_DIR).
 
-        frads tastet die Sensor-Fenster-Matrizen zufaellig ab; ohne festen Satz zieht jeder Lauf
-        (die Zone mit eigenem Sensor sogar jeder Reset) eine eigene Realisierung, am Blendungspunkt
-        etwa +-3 % E_v. Hier liest jede Zone <root>/<IDF-Name>/<Zone>.npz eines einmal erzeugten
-        Satzes und prueft ihn gegen manifest.json (Gebaeudemodell, Sensoren, Dateien).
-        FRADS_MATRIX_WRITE=1 erzeugt den Satz statt ihn zu lesen (rl/evaluation/make_fixed_matrices.py).
+        frads samples the sensor-window matrices randomly; without a fixed set every run (and a zone
+        with its own sensor even every reset) draws its own realisation, about +-3 % in E_v at a glare
+        sensor. Here every zone reads <root>/<IDF name>/<zone>.npz of a set created once and checks it
+        against manifest.json (building model, sensors, files). FRADS_MATRIX_WRITE=1 creates the set
+        instead of reading it.
         """
         if not self.model_file:
-            raise RuntimeError("FRADS_MATRIX_DIR braucht model_setup.model_path (kein Fallback-Modell)")
+            raise RuntimeError("fixed matrices need model_setup.model_path (they are keyed by the model file)")
         set_dir = Path(root) / Path(self.model_file).stem
         write = os.environ.get("FRADS_MATRIX_WRITE") == "1"
-        # vor dem Erzeugen/Laden gebildet, beim Schreiben fuer das Manifest aufbewahrt
+        # computed before matrices are created or loaded; kept for the manifest when writing
         self.fixed_matrix_digests = {z: sensor_digest(wf) for z, wf in self.epsetup.rworkflows.items()}
         if write:
             set_dir.mkdir(parents=True, exist_ok=True)
         else:
             manifest = json.loads((set_dir / "manifest.json").read_text())
             if manifest["model_sha256"] != file_sha256(self.model_file):
-                raise RuntimeError(f"{set_dir}: Gebaeudemodell geaendert, festen Satz neu erzeugen")
+                raise RuntimeError(f"{set_dir}: the building model changed, create the fixed set again")
         for zone, wf in self.epsetup.rworkflows.items():
             wf.mfile = set_dir / f"{zone}.npz"
             wf.config.settings.overwrite = write
@@ -468,9 +524,22 @@ class FradsSimulation:
                 continue
             entry = manifest["zones"][zone]
             if entry["sensors_sha256"] != self.fixed_matrix_digests[zone]:
-                raise RuntimeError(f"{set_dir}: Sensoren von {zone} passen nicht zum festen Satz")
+                raise RuntimeError(f"{set_dir}: the sensors of {zone} do not match the fixed set")
             if entry["npz_sha256"] != file_sha256(wf.mfile):
-                raise RuntimeError(f"{wf.mfile}: Pruefsumme stimmt nicht mit manifest.json")
+                raise RuntimeError(f"{wf.mfile}: checksum does not match manifest.json")
+
+    def _write_fixed_matrix_manifest(self, root):
+        """Write manifest.json for a set just created with FRADS_MATRIX_WRITE=1 (read by _use_fixed_matrices)."""
+        set_dir = Path(root) / Path(self.model_file).stem
+        manifest = {
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            "model": Path(self.model_file).name,
+            "model_sha256": file_sha256(self.model_file),
+            "zones": {z: {"sensors_sha256": self.fixed_matrix_digests[z], "npz_sha256": file_sha256(wf.mfile)}
+                      for z, wf in self.epsetup.rworkflows.items()},
+        }
+        (set_dir / "manifest.json").write_text(json.dumps(manifest, indent=1))
+        print(f"Wrote fixed matrix set {set_dir} ({len(manifest['zones'])} zones)")
 
     def _register_controller(self):
         """
@@ -482,7 +551,7 @@ class FradsSimulation:
         already handles variable registration explicitly, the AST analysis
         is redundant and we register the callback directly via the runtime API.
 
-        API-BIAS FIX (2026-04): We register with
+        We register with
         `callback_end_system_timestep_after_hvac_reporting` instead of the
         previous `callback_begin_system_timestep_before_predictor`. The former
         fires AT THE END of each HVAC sub-timestep, when the system-timestep
@@ -495,7 +564,7 @@ class FradsSimulation:
         (plus zone-level variables and agent step) at the end of each zone
         timestep. This recovers 100% of the HVAC energy that the previous
         begin-of-system callback was missing (it captured only ~20-90% depending
-        on the HVAC sub-stepping factor — see verify_api_bias_fix.py).
+        on the HVAC sub-stepping factor).
         """
         self.epsetup.api.runtime.callback_end_system_timestep_after_hvac_reporting(
             self.epsetup.state, simplified_controller_wrapper
@@ -524,8 +593,8 @@ class FradsSimulation:
                 # the live daemon leaks its multi-GB EP state (a live thread is
                 # never GC'd, so "leaving its state to be GC'd" never happens) and
                 # a second concurrent EP run in the same process deadlocks at the
-                # solar init (observed 2026-06-06 v3@99% / 2026-06-08 v5@33%, 0%
-                # CPU, host swap-saturated for ~9h). Under SubprocVecEnv every env
+                # solar init (observed: 0 % CPU, host swap-saturated for hours).
+                # Under SubprocVecEnv every env
                 # owns its own subprocess, so the only clean recovery is to let
                 # THIS subprocess die: the OS reclaims the leaked state, and
                 # SubprocVecEnv surfaces the dead worker -> the trial fails fast
@@ -546,7 +615,7 @@ class FradsSimulation:
                 # callable wrapping save_normalizer_state); it is optional, so
                 # a missing hook is a silent no-op. The save runs in a daemon
                 # thread with a bounded join so a wedged pickle can never trade
-                # this exit for another hang ("kein unbegrenztes Warten").
+                # this exit for another hang (no unbounded wait).
                 hook = getattr(self, "_normalizer_save_hook", None)
                 if callable(hook):
                     try:
@@ -568,6 +637,7 @@ class FradsSimulation:
         self.shutdown_event.clear()
         self.next_step_event.clear()
         self.simulation_finished = False
+        self.callback_error = None
         self._drain_queues()
 
         # Reset persistent controller state that must NOT survive an episode
@@ -651,8 +721,7 @@ class FradsSimulation:
             self.current_weather_idx = (self.current_weather_idx + 1) % len(self.weather_files_path)
             print(f"Using weather file: {current_weather} (index {self._active_weather_idx})")
         else:
-            current_weather = weather_files["usa_ca_san_francisco"]
-            print("Using default San Francisco weather file")
+            raise ValueError("weather_files_path is required: a non-empty list of EPW files")
 
         # Update EnergyPlus model with current run_period before starting simulation
         self._simulation_config()
@@ -671,7 +740,7 @@ class FradsSimulation:
             self._apply_custom_radiance_config()
             fixed = os.environ.get("FRADS_MATRIX_DIR") or self.epsetup_config.get("model_setup", {}).get("fixed_matrices")
             if fixed:
-                self._use_fixed_matrices(os.path.join(self.input_dir, fixed))
+                self._use_fixed_matrices(self._resolve(fixed))
             # The 5PM-image glare path (FivePhaseMethod.calculate_dgp)
             # requires the view matrices (V, Vd, Cds, Cdf) which
             # initialize_radiance skips by default. Promote when any
@@ -681,7 +750,12 @@ class FradsSimulation:
                 isinstance(v, dict) and "calculate_dgp" in v
                 for v in self.epsetup_config.values()
             )
-            self.epsetup.initialize_radiance(view_matrices=needs_view_matrices)
+            if needs_view_matrices:
+                self.epsetup.initialize_radiance(view_matrices=True)
+            else:
+                self.epsetup.initialize_radiance()
+            if fixed and os.environ.get("FRADS_MATRIX_WRITE") == "1":
+                self._write_fixed_matrix_manifest(self._resolve(fixed))
 
         # Set the simulation instance in the global context singleton
         context.simulation = self
@@ -739,6 +813,7 @@ class FradsSimulation:
         Returns:
             dict: Observation data from the simulation after the step.
         """
+        self._raise_callback_error()
         if self.simulation_finished:
             return {'simulation_finished': True}
 
@@ -751,8 +826,8 @@ class FradsSimulation:
             if action_data:
                 self.action_data_queue.put(action_data, timeout=600)
 
-            # Signal controller to continue. release=False holt nur die naechste Beobachtung, ohne den
-            # Controller freizugeben (erste Beobachtung nach dem EnergyPlus-Start, sync_first_action).
+            # Signal controller to continue. release=False only fetches the next observation without
+            # releasing the controller (first observation after the EnergyPlus start, sync_first_action).
             if release:
                 self.next_step_event.set()
 
@@ -763,6 +838,7 @@ class FradsSimulation:
             # can legitimately stall >300s. The longer bound lets such steps
             # complete instead of returning a key-less {'error'} obs.
             self.obs_data = self.obs_data_queue.get(timeout=600)
+            self._raise_callback_error()
 
             # Check if the simulation has ended
             if isinstance(self.obs_data, dict) and self.obs_data.get('simulation_finished', False):
@@ -776,8 +852,14 @@ class FradsSimulation:
             self.simulation_finished = True
             return {'simulation_finished': True}
         except queue.Empty:
+            self._raise_callback_error()
             print("Warning: No observation data received within timeout (600s).")
             return {'error': 'No step data available (timeout)'}
+
+    def _raise_callback_error(self):
+        if self.callback_error is not None:
+            self.simulation_finished = True
+            raise RuntimeError(f"Error in the EnergyPlus callback: {self.callback_error}") from self.callback_error
 
     def shutdown(self):
         """
@@ -903,7 +985,7 @@ def controller(state):
     Controller function called at each EnergyPlus timestep.
     Uses the epsetup_config to dynamically collect observations.
 
-    API-BIAS FIX (2026-04): registered with
+    Registered with
     `end_system_timestep_after_hvac_reporting`, meaning this function fires
     ONCE per HVAC system sub-timestep. The sub-step count per zone timestep
     can be 1 to ~10 depending on HVAC solver convergence. For HVAC-energy
@@ -936,10 +1018,6 @@ def controller(state):
     sys_ts_hours = exchange.system_time_step(state)   # fractional hour
     zone_ts_hours = exchange.zone_time_step(state)    # fractional hour
 
-    # Track which HVAC variables have unresolvable handles so we only warn once
-    if not hasattr(simulation, "_hvac_missing_handles"):
-        simulation._hvac_missing_handles = set()
-
     for var_id, var_info in simulation.epsetup_config.items():
         gv = var_info.get("get_variable_value") if isinstance(var_info, dict) else None
         if not gv:
@@ -950,24 +1028,13 @@ def controller(state):
         override = var_info.get("hvac_substep_accumulate")
         is_hvac = override if isinstance(override, bool) else _is_hvac_substep_variable(var_name)
         if is_hvac:
-            # Defense-in-depth: the EnergyPlus variable handle may be -1/None
-            # for variables that were request_variable()-ed but are not
-            # actually instantiated in this specific IDF/HVAC configuration
-            # (e.g. latent cooling energy on a system without humidity
-            # control). We skip those with a single warning instead of
-            # crashing the whole controller.
+            # The handle may be missing for variables this IDF/HVAC configuration does not
+            # instantiate (e.g. latent cooling energy without humidity control).
             try:
                 val = simulation.epsetup.get_variable_value(name=var_name, key=var_key)
             except Exception as exc:
-                marker = (var_name, var_key)
-                if marker not in simulation._hvac_missing_handles:
-                    print(
-                        f"[controller] WARNING: HVAC-accumulator skip for "
-                        f"{var_id} ({var_name!r} / {var_key!r}): {exc}. "
-                        f"Variable will remain 0.0 for the rest of the run."
-                    )
-                    simulation._hvac_missing_handles.add(marker)
-                continue
+                raise RuntimeError(f"'{var_id}': EnergyPlus variable {var_name!r} for key {var_key!r} "
+                                   f"is not available in this model") from exc
             simulation._hvac_accumulator[var_id] = (
                 simulation._hvac_accumulator.get(var_id, 0.0) + float(val)
             )
@@ -993,8 +1060,8 @@ def controller(state):
     ###################################
     # Initialize observation data with datetime
     obs_data = {'datetime': simulation.epsetup.get_datetime()}
-    # Wochentag nach dem Kalender der RunPeriod (1=Sonntag ... 7=Samstag), nach dem
-    # EnergyPlus die Belegung plant; das Datum oben traegt das Quelljahr der Wetterdatei.
+    # weekday of the run-period calendar (1 = Sunday ... 7 = Saturday) that drives the occupancy
+    # schedules; the date above carries the source year of the weather file
     if simulation.weekday_from_ep:
         obs_data['day_of_week'] = simulation.epsetup.api.exchange.day_of_week(simulation.epsetup.state)
 
@@ -1010,23 +1077,14 @@ def controller(state):
             if is_hvac:
                 obs_data[var_id] = simulation._hvac_accumulator.get(var_id, 0.0)
             else:
-                # Defense-in-depth for zone-level variables: skip + warn once
-                # if the EP handle is unresolvable for this IDF/HVAC config.
                 try:
                     obs_data[var_id] = simulation.epsetup.get_variable_value(
                         name=var_name,
                         key=var_key,
                     )
                 except Exception as exc:
-                    marker = (var_name, var_key)
-                    if marker not in simulation._hvac_missing_handles:
-                        print(
-                            f"[controller] WARNING: zone-level read skip for "
-                            f"{var_id} ({var_name!r} / {var_key!r}): {exc}. "
-                            f"Variable will report 0.0 for the rest of the run."
-                        )
-                        simulation._hvac_missing_handles.add(marker)
-                    obs_data[var_id] = 0.0
+                    raise RuntimeError(f"'{var_id}': EnergyPlus variable {var_name!r} for key {var_key!r} "
+                                       f"is not available in this model") from exc
 
     # Reset HVAC accumulator for the next zone timestep
     simulation._hvac_accumulator = {}
@@ -1035,16 +1093,17 @@ def controller(state):
     for var_id, var_info in simulation.epsetup_config.items():
         if "calculate_allocation" in var_info:
             alloc_cfg = var_info["calculate_allocation"]
-            try:
-                source = float(obs_data.get(alloc_cfg["source_key"], 0.0))
-                numerator = float(obs_data.get(alloc_cfg["numerator_key"], 0.0))
-                denominator = float(obs_data.get(alloc_cfg["denominator_key"], 0.0))
-                if denominator > 0:
-                    obs_data[var_id] = source * (numerator / denominator)
-                else:
-                    obs_data[var_id] = 0.0
-            except (ValueError, TypeError) as e:
-                print(f"Warning: calculate_allocation failed for {var_id}: {e}")
+            missing = [alloc_cfg[k] for k in ("source_key", "numerator_key", "denominator_key")
+                       if alloc_cfg[k] not in obs_data]
+            if missing:
+                raise RuntimeError(f"'{var_id}': calculate_allocation needs {missing}, which are computed "
+                                   "later or not at all (use get_variable_value entries)")
+            source = float(obs_data[alloc_cfg["source_key"]])
+            numerator = float(obs_data[alloc_cfg["numerator_key"]])
+            denominator = float(obs_data[alloc_cfg["denominator_key"]])
+            if denominator > 0:
+                obs_data[var_id] = source * (numerator / denominator)
+            else:
                 obs_data[var_id] = 0.0
 
     # 2. Process all get_cfs_state entries
@@ -1068,24 +1127,17 @@ def controller(state):
             t_out = simulation.epsetup.get_variable_value(
                 "Site Outdoor Air Drybulb Temperature", "Environment")
         except Exception as exc:
-            if not getattr(simulation, "_cfs_driver_warned", False):
-                print(f"[controller] cfs_thermal {var_id}: driver read failed: {exc}")
-                simulation._cfs_driver_warned = True
-            continue
+            raise RuntimeError(f"'{var_id}': cfs_thermal could not read the zone or outdoor temperature") from exc
         total_gain_w = 0.0
         pane_temps = None
-        # Defense-in-depth: model construction (from_glazing_system) and
-        # model.step run inside the exception-swallowing ctypes callback. An
-        # uncaught raise here would skip the queue put and wedge the step into
-        # a 600 s timeout. Guard per window: on failure, skip this window's
-        # delayed gain for the step (warn once) and keep the callback alive.
         for win, area in ct["windows"].items():
             try:
                 cfs_name = simulation.epsetup.get_cfs_state(win)
                 gs_name = ct.get("state_to_gs", {}).get(cfs_name, cfs_name)
                 gs = simulation.glazing_systems.get(gs_name)
                 if gs is None:
-                    continue
+                    raise KeyError(f"no glazing system '{gs_name}' for state '{cfs_name}' "
+                                   f"(loaded: {sorted(simulation.glazing_systems)}; see 'state_to_gs')")
                 model = simulation.cfs_thermal_models.get(win)
                 if model is None:
                     model = CFSThermalModel.from_glazing_system(
@@ -1107,18 +1159,14 @@ def controller(state):
                 try:
                     h_in = simulation.epsetup.get_variable_value(
                         "Surface Inside Face Convection Heat Transfer Coefficient", win)
-                except Exception:
-                    h_in = ct.get("h_in", 8.0)
+                except Exception as exc:
+                    raise RuntimeError("Surface Inside Face Convection Heat Transfer Coefficient "
+                                       f"is not available for {win}") from exc
                 res = model.step(float(incident), float(t_out), float(t_in), dt_s, h_in=float(h_in))
                 total_gain_w += res.lag_correction_wm2 * float(area)
                 pane_temps = res.pane_temps_c
             except Exception as exc:
-                if not getattr(simulation, "_cfs_step_warned", False):
-                    print(f"[controller] cfs_thermal {var_id}: window {win} step "
-                          f"failed: {exc}; skipping its delayed gain this step.",
-                          flush=True)
-                    simulation._cfs_step_warned = True
-                continue
+                raise RuntimeError(f"'{var_id}': cfs_thermal failed for window {win}") from exc
         obs_data[var_id] = total_gain_w
         if pane_temps is not None and var_info.get("log_pane_temps"):
             for k, t in enumerate(pane_temps):
@@ -1129,10 +1177,8 @@ def controller(state):
             simulation.epsetup.actuate(
                 "OtherEquipment", "Power Level", ct["equipment_name"], total_gain_w)
         except Exception as exc:
-            if not getattr(simulation, "_cfs_actuator_warned", False):
-                print(f"[controller] cfs_thermal: OtherEquipment 'Power Level' actuator "
-                      f"unavailable ({exc}); delayed gain NOT injected.")
-                simulation._cfs_actuator_warned = True
+            raise RuntimeError(f"'{var_id}': OtherEquipment 'Power Level' actuator for "
+                               f"{ct['equipment_name']!r} is not available") from exc
 
     # 3. Process all calculate_illuminance entries
     for var_id, var_info in simulation.epsetup_config.items():
@@ -1149,18 +1195,8 @@ def controller(state):
             # Use custom sensor if sensor_position/sensor_direction were configured,
             # otherwise fall back to default WPI grid via calculate_wpi.
             #
-            # Defense-in-depth (mirrors the calculate_dgp block below): the
-            # ctypes callback SILENTLY swallows Python exceptions. calculate_sensor
-            # (5PM/aBSDF/hybrid Radiance) and calculate_wpi are the most failure-
-            # prone calls in this callback (missing/stale matrices, rtrace/
-            # evalglare crashes, shape mismatches). An uncaught raise here skips
-            # the obs_data_queue.put at the end of controller(), so the main
-            # thread blocks the full 600 s step timeout and the env restarts —
-            # with no visible cause and no abort criterion (2026-07 audit). Wrap,
-            # log the traceback so the silent swallow is no longer silent, emit a
-            # sentinel, and count consecutive failures so a persistently broken
-            # sensor path fails the trial fast instead of looping (see the
-            # consecutive-error escalation before the queue put below).
+            # Errors raised in this callback reach the main thread through
+            # simplified_controller_wrapper and FradsSimulation.steps().
             try:
                 if "sensor_position" in illum_cfg and "sensor_direction" in illum_cfg:
                     # Custom sensor was registered under var_id by apply_custom_radiance_config
@@ -1181,15 +1217,8 @@ def controller(state):
                     obs_data[var_id] = wpi_result.mean()
                 else:
                     obs_data[var_id] = wpi_result
-                simulation._consec_sensor_errors = 0
             except Exception as exc:
-                import traceback
-                print(f"[WPI_ERROR] var_id={var_id} zone={zone} exc={exc!r}", flush=True)
-                traceback.print_exc()
-                obs_data[var_id] = -1.0
-                simulation._consec_sensor_errors = (
-                    getattr(simulation, "_consec_sensor_errors", 0) + 1
-                )
+                raise RuntimeError(f"'{var_id}': illuminance calculation failed in zone {zone}") from exc
 
     # 3.5. Apply per-sensor origin-constrained calibration to illuminance.
     # real_estimate = k * sim_raw  (intercept fixed at 0). k is per-sensor
@@ -1228,10 +1257,7 @@ def controller(state):
             else:
                 obs_data[var_id] = max(0.0, k * float(raw))
         except (TypeError, ValueError) as exc:
-            print(
-                f"[CAL_ERROR] var_id={var_id} k={k} raw={raw!r} exc={exc!r}",
-                flush=True,
-            )
+            raise RuntimeError(f"'{var_id}': calibration k={k} cannot be applied to {raw!r}") from exc
 
     # 4. Process all calculate_edgps / calculate_dgp entries
     #
@@ -1249,16 +1275,7 @@ def controller(state):
     # path wins -- there's no scenario where running both makes sense
     # for the same observation slot.
     #
-    # Defense-in-Depth: pyenergyplus invokes this callback via a ctypes
-    # bridge that SILENTLY swallows Python exceptions ("Exception ignored
-    # on calling ctypes callback function: ..."). If the call raises --
-    # e.g. AttributeError on a workflow class that lacks the method,
-    # missing matrices, evalglare crash -- the controller exits before
-    # reaching `obs_data_queue.put` below, the main thread blocks forever
-    # on `obs_data_queue.get(timeout=120)`, and the simulation appears to
-    # hang. Wrap each call, log the traceback so the silent swallow is no
-    # longer silent, and fall back to a sentinel observation so the
-    # callback still completes its put on the queue.
+    # Errors raised here reach the main thread through simplified_controller_wrapper.
     for var_id, var_info in simulation.epsetup_config.items():
         cfg = var_info.get("calculate_dgp") or var_info.get("calculate_edgps")
         if cfg is None:
@@ -1294,14 +1311,8 @@ def controller(state):
                 if _sensor_debug:
                     print(f"[EDGP_RESULT] var_id={var_id} val={obs_data[var_id]!r}", flush=True)
         except Exception as exc:
-            import traceback
-            label = "DGP" if "calculate_dgp" in var_info else "EDGP"
-            print(
-                f"[{label}_ERROR] var_id={var_id} zone={zone} exc={exc!r}",
-                flush=True,
-            )
-            traceback.print_exc()
-            obs_data[var_id] = (-1.0, -1.0)
+            label = "DGP" if "calculate_dgp" in var_info else "eDGP"
+            raise RuntimeError(f"'{var_id}': {label} calculation failed in zone {zone}") from exc
 
         # 4.5. Calibrate Ev component of DGP/eDGP tuple using the configured
         # ev_sensor's calibration.k. This keeps the Wienold-DGPs reward path
@@ -1321,17 +1332,14 @@ def controller(state):
                     k_ev = 1.0
                 if k_ev != 1.0:
                     raw_pair = obs_data.get(var_id)
-                    if isinstance(raw_pair, tuple) and len(raw_pair) == 2 and raw_pair != (-1.0, -1.0):
+                    if isinstance(raw_pair, tuple) and len(raw_pair) == 2:
                         try:
                             dgp_v = float(raw_pair[0])
                             ev_v = float(raw_pair[1])
                             obs_data[var_id] = (dgp_v, max(0.0, k_ev * ev_v))
                         except (TypeError, ValueError) as exc:
-                            print(
-                                f"[CAL_EV_ERROR] var_id={var_id} ev_sensor={ev_sensor_name} "
-                                f"k={k_ev} raw={raw_pair!r} exc={exc!r}",
-                                flush=True,
-                            )
+                            raise RuntimeError(f"'{var_id}': calibration of Ev with k={k_ev} cannot be "
+                                               f"applied to {raw_pair!r}") from exc
 
     # 5. Process lighting power calculations for entries that depend on other values
     for var_id, var_info in simulation.epsetup_config.items():
@@ -1354,13 +1362,8 @@ def controller(state):
                     area_m2 = lighting_calc["area_m2"]
                     power_density = power_density_m2 * area_m2
                     # print(f"Using area-based calculation for {var_id}: {power_density_m2} W/m² × {area_m2} m² = {power_density} W")
-                elif "power_density" in lighting_calc:
-                    # Use direct power density value (backwards compatibility)
+                else:  # validate_config requires power_density or power_density_m2 + area_m2
                     power_density = lighting_calc["power_density"]
-                else:
-                    # print(f"Warning: Neither 'power_density' nor 'power_density_m2' + 'area_m2' specified for {var_id}")
-                    obs_data[var_id] = 0.0
-                    continue
                 
                 # Calculate lighting power based on the dependency value (WPI)
                 wpi_value = obs_data[depends_on_key]
@@ -1387,8 +1390,7 @@ def controller(state):
                 zone_name = zone.upper()
                 simulation.epsetup.actuate_lighting_power(light=zone_name, value=lighting_power)
             else:
-                print(f"Warning: Dependency '{depends_on_key}' not found for '{var_id}'")
-                obs_data[var_id] = 0.0
+                raise RuntimeError(f"'{var_id}': '{depends_on_key}' is not in the observation data")
     
     # 6. Process all divider entries BEFORE calculate_energy_sum
     for var_id, var_info in simulation.epsetup_config.items():
@@ -1398,7 +1400,7 @@ def controller(state):
                 obs_data[var_id] = float(obs_data[var_id]) / float(divider_value)
                 # print(f"Applied divider {divider_value} to {var_id}: {obs_data[var_id]}")
             except (ValueError, TypeError, ZeroDivisionError) as e:
-                print(f"Warning: Could not apply divider to {var_id}: {e}")
+                raise RuntimeError(f"'{var_id}': divider {divider_value!r} cannot be applied") from e
     
     # 7. Process all calculate_energy_sum entries
     for var_id, var_info in simulation.epsetup_config.items():
@@ -1408,37 +1410,22 @@ def controller(state):
             total_energy = 0
             for key in keys_to_sum:
                 value = obs_data.get(key)
-                if value is not None:
-                    try:
-                        total_energy += float(value)
-                    except (ValueError, TypeError):
-                         print(f"Warning: Value for key '{key}' ({value}) is not numeric. Skipping in energy sum for '{var_id}'.")
-                else:
-                    print(f"Warning: Key '{key}' not found in observation data for energy sum '{var_id}'. Assuming 0.")
+                if value is None:
+                    raise RuntimeError(f"'{var_id}': '{key}' is not in the observation data for the energy sum")
+                try:
+                    total_energy += float(value)
+                except (ValueError, TypeError) as e:
+                    raise RuntimeError(f"'{var_id}': '{key}' = {value!r} is not numeric") from e
             obs_data[var_id] = total_energy
 
     ###################################
-    # Abort criterion for a persistently broken sensor path. Phase 3 emits a
-    # -1.0 sentinel (instead of hanging) on each calculate_sensor/calculate_wpi
-    # failure and counts consecutive failures. If the sensor never recovers we
-    # would otherwise feed -1.0 into training indefinitely; past a threshold,
-    # surface an explicit error obs so the env's bounded restart logic
-    # (frads_gym.reset(): max 2 restarts, then fail) ends the trial fast with a
-    # logged cause instead of a silent garbage-fed run.
-    _MAX_CONSEC_SENSOR_ERRORS = 10
-    if getattr(simulation, "_consec_sensor_errors", 0) >= _MAX_CONSEC_SENSOR_ERRORS:
-        print(f"[SENSOR_FATAL] calculate_sensor/calculate_wpi failed "
-              f"{simulation._consec_sensor_errors} consecutive zone timesteps; "
-              f"signalling error to abort the restart loop.", flush=True)
-        obs_data = {'error': 'calculate_sensor failed repeatedly'}
-
     ###################################
     # Put data into the queue for external controller.
     # Bounded + shutdown-aware: a plain put()/wait() on the maxsize=1 queue
     # blocks this EnergyPlus thread forever if the main thread stopped draining
     # (forced teardown after a >timeout step). Re-checking shutdown_event lets
     # the thread return so EnergyPlus can honor stop_simulation() and exit,
-    # instead of wedging the subsequent delete_state() (2026-06-06 deadlock).
+    # instead of wedging the subsequent delete_state().
     while not simulation.shutdown_event.is_set():
         try:
             simulation.obs_data_queue.put(obs_data, timeout=1.0)
@@ -1481,8 +1468,20 @@ def controller(state):
 
 # Create a simple wrapper function that FRADS can analyze correctly
 def simplified_controller_wrapper(state):
-    """Simple wrapper around the real controller"""
-    return controller(state)
+    """EnergyPlus callback. ctypes swallows exceptions raised in a callback, so an error is stored,
+    EnergyPlus is asked to stop and FradsSimulation.steps() re-raises it in the main thread."""
+    simulation = context.simulation
+    if simulation.callback_error is not None:
+        return
+    try:
+        return controller(state)
+    except Exception as exc:
+        simulation.callback_error = exc
+        simulation.epsetup.api.runtime.stop_simulation(state)
+        try:
+            simulation.obs_data_queue.put_nowait({"callback_error": exc})
+        except queue.Full:
+            pass  # steps() also checks callback_error after its timeout
 
 
 def random_action_values(simulation_data):
