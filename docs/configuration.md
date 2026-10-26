@@ -128,7 +128,7 @@ default -3 to 3) to the observation bounds:
 
 | Key | Meaning |
 |---|---|
-| `active` | Switch. Takes precedence over `observation_normalize`. |
+| `active` | Switch. For a single value it takes precedence over `observation_normalize`; for an array (such as a sensor grid) an active `observation_normalize` wins, so switch that off. |
 | `dynamic` | `"welford"` (default): running mean and variance over everything seen. `"dynamic"`: over a moving window of `sample_length`. `"ema"`: exponential, with `ema_span`. |
 | `low`, `high` | z-score bounds mapped to the observation bounds. |
 | `max_deviation` | Clip the z-score to ±`max_deviation` first. |

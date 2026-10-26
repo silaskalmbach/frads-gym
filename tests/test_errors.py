@@ -56,6 +56,20 @@ def test_state_without_glazing_is_an_error():
         sim._model_setup()
 
 
+def test_state_may_be_a_construction_of_the_model(monkeypatch):
+    load = fw.fr.load_energyplus_model
+
+    def model_with_cfs(path):
+        m = load(path)
+        m.construction_complex_fenestration_state = {"ec60": {}}  # as if the IDF defined it
+        return m
+
+    monkeypatch.setattr(fw.fr, "load_energyplus_model", model_with_cfs)
+    _bare_simulation(epsetup_config={
+        "model_setup": {"model_type": "small_office"},
+        "facade_state_mapping": {"states": [{"name": "ec60", "max_threshold": 1.0}]}})._model_setup()
+
+
 @pytest.mark.slow
 @pytest.mark.simulation
 def test_missing_energyplus_variable_fails_fast(tmp_path):

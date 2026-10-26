@@ -43,6 +43,16 @@ def _bounds(entry_id, name, spec, errors):
         errors.append(f"'{entry_id}.{name}' needs 'low' and 'high'")
 
 
+def _view_key(edgp):
+    """The eDGP view placement of an entry, compared by value ([0, -1, 0] equals [0.0, -1.0, 0.0])."""
+    if "view_position" not in edgp or "view_direction" not in edgp:
+        return None  # frads' default view of the zone
+    try:
+        return tuple(tuple(float(x) for x in edgp[k]) for k in ("view_position", "view_direction"))
+    except (TypeError, ValueError):
+        return repr((edgp["view_position"], edgp["view_direction"]))
+
+
 def validate_config(config):
     """Raise ConfigError listing every problem of a frads-gym configuration dict."""
     if not isinstance(config, dict):
@@ -84,6 +94,7 @@ def validate_config(config):
             if any(b <= a for a, b in zip(limits, limits[1:])) or limits[-1] < 1:
                 errors.append(f"'facade_state_mapping' thresholds must increase and end at >= 1, got {limits}")
 
+    edgp_views = {}  # zone -> view placement -> entries
     for k, v in active.items():
         for key in v:
             if key in REMOVED:
@@ -104,9 +115,16 @@ def validate_config(config):
         for name in ("observation_normalize",):
             if isinstance(v.get(name), dict) and v[name].get("active"):
                 _bounds(k, name, v[name], errors)
-        if ("get_cfs_state" in v and "cfs_state" not in k
-                and v.get("observation_space", {}).get("active", True) and "observation_space" in v):
+        obs = v.get("observation_space")
+        if "get_cfs_state" in v and "cfs_state" not in k and isinstance(obs, dict) and obs.get("active", True):
             errors.append(f"'{k}': the key of an observed get_cfs_state entry must contain 'cfs_state'")
+        gv = v.get("get_variable_value")
+        if "get_variable_value" in v and not (isinstance(gv, dict) and all(isinstance(gv.get(x), str) and gv[x]
+                                                                          for x in ("name", "key"))):
+            errors.append(f"'{k}.get_variable_value' needs 'name' and 'key'")
+        edgp = v.get("calculate_edgps")
+        if isinstance(edgp, dict):
+            edgp_views.setdefault(edgp.get("zone"), {}).setdefault(_view_key(edgp), []).append(k)
         cal = v.get("calibration")
         if cal is not None and not (isinstance(cal, dict) and cal.get("method") == "origin_scaling"
                                     and isinstance(cal.get("k", 1.0), Real)):
@@ -135,6 +153,11 @@ def validate_config(config):
         refs += refs_extra
         errors += [f"'{k}' refers to '{r}', which is not an active entry"
                    for r in refs if r is not None and r not in active]
+    # a custom eDGP view replaces the zone's view, so all eDGP entries of a zone share one placement
+    for zone, views in edgp_views.items():
+        if len(views) > 1:
+            errors.append(f"calculate_edgps entries {sorted(e for es in views.values() for e in es)} in zone "
+                          f"'{zone}' use different views; a zone has one eDGP view")
     _raise(errors, "configuration")
 
 
