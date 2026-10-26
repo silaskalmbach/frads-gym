@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-10-26
 
 First release meant for use outside the original project. Simulation results for existing configurations
 are unchanged unless noted under "Changed".
