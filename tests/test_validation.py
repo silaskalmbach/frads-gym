@@ -81,9 +81,15 @@ def test_dgp_may_come_with_edgps():
     validate_config(cfg)
 
 
-def test_variable_needs_name_and_key():
+@pytest.mark.parametrize("change", [lambda g: g.pop("key"), None])
+def test_variable_needs_name_and_key(change):
+    def drop(c):
+        if change is None:
+            c["t_out"]["get_variable_value"] = None
+        else:
+            change(c["t_out"]["get_variable_value"])
     with pytest.raises(ConfigError, match=r"'t_out.get_variable_value' needs 'name' and 'key'"):
-        validate_config(broken(lambda c: c["t_out"]["get_variable_value"].pop("key")))
+        validate_config(broken(drop))
 
 
 def test_non_object_observation_space_is_a_config_error():
@@ -98,6 +104,8 @@ def _edgps(**view):
 def test_edgps_entries_of_a_zone_share_one_view():
     eye = dict(view_position=[1, 1, 1.2], view_direction=[0, -1, 0])
     validate_config(broken(lambda c: c.update(g1=_edgps(**eye), g2=_edgps(**eye))))
+    same = dict(view_position=[1.0, 1.0, 1.2], view_direction=[0.0, -1.0, 0.0])
+    validate_config(broken(lambda c: c.update(g1=_edgps(**eye), g2=_edgps(**same))))
     with pytest.raises(ConfigError, match=r"\['g1', 'g2'\] in zone 'z' use different views"):
         validate_config(broken(lambda c: c.update(g1=_edgps(**eye), g2=_edgps())))
 

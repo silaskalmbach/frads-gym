@@ -43,6 +43,16 @@ def _bounds(entry_id, name, spec, errors):
         errors.append(f"'{entry_id}.{name}' needs 'low' and 'high'")
 
 
+def _view_key(edgp):
+    """The eDGP view placement of an entry, compared by value ([0, -1, 0] equals [0.0, -1.0, 0.0])."""
+    if "view_position" not in edgp or "view_direction" not in edgp:
+        return None  # frads' default view of the zone
+    try:
+        return tuple(tuple(float(x) for x in edgp[k]) for k in ("view_position", "view_direction"))
+    except (TypeError, ValueError):
+        return repr((edgp["view_position"], edgp["view_direction"]))
+
+
 def validate_config(config):
     """Raise ConfigError listing every problem of a frads-gym configuration dict."""
     if not isinstance(config, dict):
@@ -109,14 +119,12 @@ def validate_config(config):
         if "get_cfs_state" in v and "cfs_state" not in k and isinstance(obs, dict) and obs.get("active", True):
             errors.append(f"'{k}': the key of an observed get_cfs_state entry must contain 'cfs_state'")
         gv = v.get("get_variable_value")
-        if gv is not None and not (isinstance(gv, dict) and all(isinstance(gv.get(x), str) and gv[x]
-                                                                 for x in ("name", "key"))):
+        if "get_variable_value" in v and not (isinstance(gv, dict) and all(isinstance(gv.get(x), str) and gv[x]
+                                                                          for x in ("name", "key"))):
             errors.append(f"'{k}.get_variable_value' needs 'name' and 'key'")
         edgp = v.get("calculate_edgps")
         if isinstance(edgp, dict):
-            view = ((edgp.get("view_position"), edgp.get("view_direction"))
-                    if "view_position" in edgp and "view_direction" in edgp else None)
-            edgp_views.setdefault(edgp.get("zone"), {}).setdefault(repr(view), []).append(k)
+            edgp_views.setdefault(edgp.get("zone"), {}).setdefault(_view_key(edgp), []).append(k)
         cal = v.get("calibration")
         if cal is not None and not (isinstance(cal, dict) and cal.get("method") == "origin_scaling"
                                     and isinstance(cal.get("k", 1.0), Real)):
