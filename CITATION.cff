@@ -7,6 +7,7 @@ authors:
     orcid: "https://orcid.org/0000-0001-6481-8424"
 title: "frads-gym: A Gymnasium environment for facade control with EnergyPlus and Radiance"
 version: 0.2.0
+date-released: 2026-10-26
 doi: 10.5281/zenodo.18504304
 url: "https://github.com/silaskalmbach/frads-gym"
 repository-code: "https://github.com/silaskalmbach/frads-gym"
